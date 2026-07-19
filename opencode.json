@@ -1,15 +1,20 @@
 {
   "$schema": "https://opencode.ai/config.json",
+  "instructions": [
+    "docs/development-standards.md"
+  ],
   "agent": {
-    "system_prompt_extension": "CRITICAL: Do not invoke read_file, view_file, or file search tools on any file you have just successfully updated via write_file or apply_patch in the same or immediate next turn. Trust your internal state and memory of the modified content unless an explicit error or test failure occurs.",
     "tools": {
       "file_read_caching": true
     }
   },
-  "mcpServers": {
-    "file-cache": {
-      "command": "npx",
-      "args": ["-y", "@anthropic/ib-mcp-cache-server"]
+  "mcp": {
+    "file-cache-server": {
+        "type": "local",
+        "command": "npx",
+        "args": ["-y", "@anthropic/ib-mcp-cache-server"],
+        "enabled": true
+      }
     }
-  }
+
 }
