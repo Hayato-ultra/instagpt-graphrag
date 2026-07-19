@@ -1,0 +1,24 @@
+# Temporary working directories
+temp_media/
+temp_frames/
+
+# Environment files
+.env
+.env1
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store

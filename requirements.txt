@@ -1,0 +1,13 @@
+yt-dlp
+faster-whisper
+opencv-python
+Pillow
+imagehash
+neo4j
+groq
+python-dotenv
+sentence-transformers
+numpy
+fastapi
+uvicorn[standard]
+python-multipart

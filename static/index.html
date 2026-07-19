@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>InstaGPT GraphRAG</title>
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0d1117; color: #c9d1d9; }
+        
+        .container { display: grid; grid-template-columns: 350px 1fr; height: 100vh; }
+        
+        .sidebar { background: #161b22; border-right: 1px solid #30363d; padding: 20px; overflow-y: auto; }
+        .sidebar h1 { font-size: 20px; margin-bottom: 20px; color: #58a6ff; }
+        .sidebar h2 { font-size: 14px; margin: 15px 0 8px; color: #8b949e; text-transform: uppercase; }
+        
+        .input-group { margin-bottom: 15px; }
+        .input-group input, .input-group textarea { width: 100%; padding: 10px; background: #0d1117; border: 1px solid #30363d; border-radius: 6px; color: #c9d1d9; font-size: 14px; }
+        .input-group textarea { min-height: 80px; resize: vertical; }
+        .input-group input:focus, .input-group textarea:focus { outline: none; border-color: #58a6ff; }
+        
+        .btn { padding: 10px 16px; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: 500; }
+        .btn-primary { background: #238636; color: #fff; width: 100%; }
+        .btn-primary:hover { background: #2ea043; }
+        .btn-secondary { background: #21262d; color: #c9d1d9; border: 1px solid #30363d; }
+        .btn-secondary:hover { background: #30363d; }
+        
+        .reel-list { max-height: 200px; overflow-y: auto; }
+        .reel-item { padding: 8px 10px; border-radius: 6px; cursor: pointer; margin-bottom: 4px; font-size: 13px; border: 1px solid transparent; }
+        .reel-item:hover { background: #21262d; border-color: #30363d; }
+        .reel-item.active { background: #1f6feb22; border-color: #1f6feb; }
+        .reel-item .sentiment { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
+        .reel-item .positive { background: #3fb950; }
+        .reel-item .negative { background: #f85149; }
+        .reel-item .neutral { background: #8b949e; }
+        
+        .query-result { background: #0d1117; border: 1px solid #30363d; border-radius: 6px; padding: 12px; margin-top: 10px; font-size: 13px; line-height: 1.5; white-space: pre-wrap; }
+        .cypher { font-family: monospace; color: #79c0ff; font-size: 12px; margin-top: 8px; padding: 8px; background: #161b22; border-radius: 4px; }
+        
+        #graph { width: 100%; height: 100%; }
+        .graph-container { position: relative; overflow: hidden; background: #0d1117; }
+        
+        .node-label { font-size: 11px; fill: #c9d1d9; pointer-events: none; }
+        .node { cursor: pointer; }
+        .node:hover { filter: brightness(1.3); }
+        
+        .link { stroke-opacity: 0.4; }
+        .link-label { font-size: 9px; fill: #8b949e; }
+        
+        .tooltip { position: absolute; background: #1c2128; border: 1px solid #30363d; border-radius: 6px; padding: 10px; font-size: 12px; pointer-events: none; display: none; max-width: 300px; z-index: 100; }
+        
+        .legend { position: absolute; bottom: 20px; left: 20px; background: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 12px; font-size: 11px; }
+        .legend-item { display: flex; align-items: center; margin-bottom: 4px; }
+        .legend-color { width: 12px; height: 12px; border-radius: 50%; margin-right: 8px; }
+        
+        .status-bar { position: absolute; top: 10px; right: 10px; display: flex; gap: 10px; }
+        .status-pill { background: #161b22; border: 1px solid #30363d; border-radius: 20px; padding: 6px 12px; font-size: 12px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="sidebar">
+            <h1>InstaGPT GraphRAG</h1>
+            
+            <h2>Process Reel</h2>
+            <div class="input-group">
+                <input type="text" id="reelUrl" placeholder="Instagram Reel URL..." />
+            </div>
+            <button class="btn btn-primary" onclick="processReel()">Process</button>
+            <div id="processStatus" style="margin-top: 10px; font-size: 12px; color: #8b949e;"></div>
+            
+            <h2>Query Knowledge</h2>
+            <div class="input-group">
+                <textarea id="queryInput" placeholder="Ask about your reels..."></textarea>
+            </div>
+            <button class="btn btn-primary" onclick="queryReel()">Query</button>
+            <div id="queryResult" class="query-result" style="display: none;"></div>
+            
+            <h2>Reels (<span id="reelCount">0</span>)</h2>
+            <div id="reelList" class="reel-list"></div>
+            
+            <h2>Categories</h2>
+            <div id="categoryList"></div>
+        </div>
+        
+        <div class="graph-container">
+            <svg id="graph"></svg>
+            <div class="tooltip" id="tooltip"></div>
+            <div class="legend" id="legend"></div>
+            <div class="status-bar">
+                <div class="status-pill" id="nodeCount">Nodes: 0</div>
+                <div class="status-pill" id="linkCount">Links: 0</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const API = 'http://localhost:8000';
+        let graphData = { nodes: [], links: [] };
+        let simulation;
+
+        const colors = {
+            Reel: '#58a6ff',
+            Theme: '#3fb950',
+            Topic: '#d2a8ff',
+            SubTopic: '#a5d6ff',
+            Category: '#f0883e',
+            Entity: '#f85149',
+            Hashtag: '#3fb950',
+            Step: '#79c0ff',
+            Resource: '#ffa657',
+            Quote: '#d2a8ff',
+            ActionItem: '#3fb950',
+            KeyMoment: '#f0883e',
+            EngagementHook: '#f85149',
+        };
+
+        async function processReel() {
+            const url = document.getElementById('reelUrl').value.trim();
+            if (!url) return;
+            
+            const status = document.getElementById('processStatus');
+            status.textContent = 'Processing... This may take a minute.';
+            
+            try {
+                const res = await fetch(`${API}/process`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({url})
+                });
+                const data = await res.json();
+                status.textContent = `Job started: ${data.job_id}`;
+                pollJob(data.job_id);
+            } catch(e) {
+                status.textContent = `Error: ${e.message}`;
+            }
+        }
+
+        async function pollJob(jobId) {
+            const status = document.getElementById('processStatus');
+            const interval = setInterval(async () => {
+                const res = await fetch(`${API}/process/${jobId}`);
+                const data = await res.json();
+                
+                if (data.status === 'completed') {
+                    clearInterval(interval);
+                    status.textContent = `Done! Reel: ${data.reel_id}`;
+                    loadReels();
+                } else if (data.status === 'failed') {
+                    clearInterval(interval);
+                    status.textContent = `Failed: ${data.error}`;
+                } else {
+                    const progress = data.progress || [];
+                    status.textContent = progress[progress.length - 1] || 'Processing...';
+                }
+            }, 3000);
+        }
+
+        async function queryReel() {
+            const query = document.getElementById('queryInput').value.trim();
+            if (!query) return;
+            
+            const resultDiv = document.getElementById('queryResult');
+            resultDiv.style.display = 'block';
+            resultDiv.innerHTML = 'Querying...';
+            
+            try {
+                const res = await fetch(`${API}/query`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({query})
+                });
+                const data = await res.json();
+                
+                let html = `<strong>Answer:</strong>\n${data.answer}`;
+                if (data.cypher) {
+                    html += `\n\n<strong>Cypher:</strong>\n<div class="cypher">${data.cypher}</div>`;
+                }
+                resultDiv.innerHTML = html;
+            } catch(e) {
+                resultDiv.innerHTML = `Error: ${e.message}`;
+            }
+        }
+
+        async function loadReels() {
+            const res = await fetch(`${API}/reels`);
+            const data = await res.json();
+            document.getElementById('reelCount').textContent = data.count;
+            
+            const list = document.getElementById('reelList');
+            list.innerHTML = data.reels.map(r => `
+                <div class="reel-item" onclick="loadReelGraph('${r.id}')">
+                    <span class="sentiment ${r.sentiment || 'neutral'}"></span>
+                    ${r.id.substring(0, 12)}...
+                </div>
+            `).join('');
+        }
+
+        async function loadCategories() {
+            const res = await fetch(`${API}/categories`);
+            const data = await res.json();
+            
+            const list = document.getElementById('categoryList');
+            list.innerHTML = data.categories.map(c => `
+                <div class="reel-item" onclick="queryCategory('${c.category}')">
+                    <strong>${c.category}</strong> (${c.topic_count} topics)
+                </div>
+            `).join('');
+        }
+
+        async function queryCategory(cat) {
+            document.getElementById('queryInput').value = `Show reels in ${cat} category`;
+            queryReel();
+        }
+
+        async function loadReelGraph(reelId) {
+            const res = await fetch(`${API}/export/${reelId}/json`);
+            graphData = await res.json();
+            renderGraph();
+        }
+
+        async function loadFullGraph() {
+            const res = await fetch(`${API}/export/full/json`);
+            graphData = await res.json();
+            renderGraph();
+        }
+
+        function renderGraph() {
+            const svg = d3.select('#graph');
+            svg.selectAll('*').remove();
+            
+            const container = document.querySelector('.graph-container');
+            const width = container.clientWidth;
+            const height = container.clientHeight;
+            
+            svg.attr('width', width).attr('height', height);
+            
+            document.getElementById('nodeCount').textContent = `Nodes: ${graphData.nodes.length}`;
+            document.getElementById('linkCount').textContent = `Links: ${graphData.relationships.length}`;
+            
+            const g = svg.append('g');
+            
+            const zoom = d3.zoom()
+                .scaleExtent([0.1, 4])
+                .on('zoom', (event) => g.attr('transform', event.transform));
+            svg.call(zoom);
+            
+            const nodeMap = {};
+            graphData.nodes.forEach(n => { nodeMap[n.id] = n; });
+            
+            const links = graphData.relationships.map(r => ({
+                source: r.source,
+                target: r.target,
+                type: r.type,
+            })).filter(l => nodeMap[l.source] && nodeMap[l.target]);
+            
+            const nodes = graphData.nodes.map(n => ({
+                id: n.id,
+                ...n,
+                radius: n.labels.includes('Reel') ? 20 : 12,
+            }));
+            
+            simulation = d3.forceSimulation(nodes)
+                .force('link', d3.forceLink(links).id(d => d.id).distance(100))
+                .force('charge', d3.forceManyBody().strength(-200))
+                .force('center', d3.forceCenter(width / 2, height / 2))
+                .force('collision', d3.forceCollide().radius(d => d.radius + 10));
+            
+            const link = g.append('g')
+                .selectAll('line')
+                .data(links)
+                .join('line')
+                .attr('class', 'link')
+                .attr('stroke', '#30363d')
+                .attr('stroke-width', 1.5);
+            
+            const node = g.append('g')
+                .selectAll('g')
+                .data(nodes)
+                .join('g')
+                .attr('class', 'node')
+                .call(d3.drag()
+                    .on('start', dragstarted)
+                    .on('drag', dragged)
+                    .on('end', dragended));
+            
+            node.append('circle')
+                .attr('r', d => d.radius)
+                .attr('fill', d => {
+                    const label = d.labels[0];
+                    return colors[label] || '#8b949e';
+                })
+                .attr('stroke', '#0d1117')
+                .attr('stroke-width', 2);
+            
+            node.append('text')
+                .attr('class', 'node-label')
+                .attr('dy', d => d.radius + 14)
+                .attr('text-anchor', 'middle')
+                .text(d => {
+                    const name = d.properties?.name || d.properties?.id || d.labels[0];
+                    return name.length > 20 ? name.substring(0, 20) + '...' : name;
+                });
+            
+            node.on('mouseover', (event, d) => {
+                const tooltip = document.getElementById('tooltip');
+                const props = Object.entries(d.properties || {}).map(([k,v]) => `${k}: ${v}`).join('\n');
+                tooltip.innerHTML = `<strong>${d.labels.join(', ')}</strong>\n${props}`;
+                tooltip.style.display = 'block';
+                tooltip.style.left = (event.pageX + 10) + 'px';
+                tooltip.style.top = (event.pageY + 10) + 'px';
+            })
+            .on('mouseout', () => {
+                document.getElementById('tooltip').style.display = 'none';
+            });
+            
+            simulation.on('tick', () => {
+                link.attr('x1', d => d.source.x).attr('y1', d => d.source.y)
+                    .attr('x2', d => d.target.x).attr('y2', d => d.target.y);
+                node.attr('transform', d => `translate(${d.x},${d.y})`);
+            });
+            
+            function dragstarted(event, d) {
+                if (!event.active) simulation.alphaTarget(0.3).restart();
+                d.fx = d.x; d.fy = d.y;
+            }
+            function dragged(event, d) { d.fx = event.x; d.fy = event.y; }
+            function dragended(event, d) {
+                if (!event.active) simulation.alphaTarget(0);
+                d.fx = null; d.fy = null;
+            }
+            
+            const legend = document.getElementById('legend');
+            const usedLabels = new Set(nodes.flatMap(n => n.labels));
+            legend.innerHTML = Array.from(usedLabels).map(label => `
+                <div class="legend-item">
+                    <div class="legend-color" style="background: ${colors[label] || '#8b949e'}"></div>
+                    ${label}
+                </div>
+            `).join('');
+        }
+
+        document.getElementById('queryInput').addEventListener('keydown', e => {
+            if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); queryReel(); }
+        });
+
+        loadReels();
+        loadCategories();
+        loadFullGraph();
+    </script>
+</body>
+</html>
