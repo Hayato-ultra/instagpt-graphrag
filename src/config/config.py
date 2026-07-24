@@ -38,6 +38,11 @@ class Settings(BaseSettings):
     GOOGLE_API_KEY: str = ""
     GOOGLE_CHAT_MODEL: str = "gemini-1.5-flash"
 
+    # Ollama (Local LLM)
+    OLLAMA_BASE_URL: str = "http://localhost:11434/v1"
+    OLLAMA_CHAT_MODEL: str = "llama3.1"
+    OLLAMA_API_KEY: str = "ollama"  # Not needed, but required for OpenAI client
+
     # Qdrant Vector DB
     QDRANT_URL: str = "http://localhost:6333"
     QDRANT_API_KEY: str = ""
@@ -72,11 +77,6 @@ class Settings(BaseSettings):
     # Playwright
     PLAYWRIGHT_BROWSER: str = "chromium"
     PLAYWRIGHT_HEADLESS: bool = True
-
-    # LLM Provider Settings
-    LLM_PROVIDER: str = "openai"  # openai, openrouter, nvidia, google
-    LLM_FALLBACK_CHAIN: str = "openrouter,nvidia,google"
-    LLM_FALLBACK_ENABLED: bool = True
 
 
 @lru_cache

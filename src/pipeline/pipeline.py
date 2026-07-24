@@ -68,13 +68,9 @@ class KnowledgeGraphPipeline:
         """Cleanup resources."""
         await self.extractor.close()
         await self.enrichment.close()
-        if self.vector_store.client:
-            await self.vector_store.client.close()
-        if self.embedder.client:
-            await self.embedder.client.close()
+        if self.embedder.openai_client:
+            await self.embedder.openai_client.close()
         await self.categorizer.close()
-        if self.graph_store:
-            await self.graph_store.close()
     
     async def process_url(self, url: str) -> PipelineResult:
         """Process a single URL through the full pipeline."""

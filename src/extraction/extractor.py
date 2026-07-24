@@ -41,10 +41,20 @@ class ContentExtractor:
 
     async def _get_playwright_browser(self):
         if self._playwright_browser is None:
-            playwright = await async_playwright().start()
-            self._playwright_browser = await playwright.chromium.launch(
-                headless=settings.PLAYWRIGHT_HEADLESS
-            )
+            # Use sync playwright in a thread to avoid subprocess issues on Windows
+            import threading
+            from playwright.sync_api import sync_playwright
+            
+            def _launch_browser():
+                pw = sync_playwright().start()
+                self._playwright_browser = pw.chromium.launch(
+                    headless=settings.PLAYWRIGHT_HEADLESS
+                )
+                return pw
+            
+            # Run in thread pool to avoid blocking event loop
+            loop = asyncio.get_event_loop()
+            self._playwright_pw = await loop.run_in_executor(None, _launch_browser)
         return self._playwright_browser
 
     async def extract(self, url: str) -> ExtractedContent:
@@ -178,42 +188,59 @@ class ContentExtractor:
         )
 
     async def _extract_playwright(self, url: str) -> ExtractedContent:
-        browser = await self._get_playwright_browser()
-        page = await browser.new_page()
+        """Extract using Playwright sync API in a thread."""
+        import asyncio
         
-        try:
-            await page.goto(url, wait_until="networkidle", timeout=30000)
-            await page.wait_for_timeout(2000)
+        def _extract_sync():
+            from playwright.sync_api import sync_playwright
             
-            # Try to get article content
-            content = await page.evaluate("""
-                () => {
-                    const article = document.querySelector('article, main, [role="main"], .content, .post');
-                    return article ? article.innerText : document.body.innerText;
-                }
-            """)
-            
-            title = await page.title()
-            
-            if len(content) < 100:
-                raise ValueError("Insufficient content")
-            
-            return ExtractedContent(
-                url=url,
-                title=title,
-                raw_text=content,
-                markdown=content,
-                metadata={"extractor": "playwright"},
-                content_length=len(content),
-                word_count=len(content.split())
-            )
-        finally:
-            await page.close()
+            with sync_playwright() as p:
+                browser = p.chromium.launch(headless=settings.PLAYWRIGHT_HEADLESS)
+                page = browser.new_page()
+                
+                try:
+                    page.goto(url, wait_until="networkidle", timeout=30000)
+                    page.wait_for_timeout(2000)
+                    
+                    # Try to get article content
+                    content = page.evaluate("""
+                        () => {
+                            const article = document.querySelector('article, main, [role="main"], .content, .post');
+                            return article ? article.innerText : document.body.innerText;
+                        }
+                    """)
+                    
+                    title = page.title()
+                    
+                    if len(content) < 100:
+                        raise ValueError("Insufficient content")
+                    
+                    return {
+                        "url": url,
+                        "title": title,
+                        "raw_text": content,
+                        "markdown": content,
+                    }
+                finally:
+                    page.close()
+                    browser.close()
+        
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(None, _extract_sync)
+        
+        return ExtractedContent(
+            url=result["url"],
+            title=result["title"],
+            raw_text=result["raw_text"],
+            markdown=result["markdown"],
+            metadata={"extractor": "playwright"},
+            content_length=len(result["raw_text"]),
+            word_count=len(result["raw_text"].split())
+        )
 
     async def close(self):
         await self.client.aclose()
-        if self._playwright_browser:
-            await self._playwright_browser.close()
+        # No async cleanup needed for sync playwright instances
 
 
 class SemanticChunker:

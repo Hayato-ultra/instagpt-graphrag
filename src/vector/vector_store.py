@@ -60,13 +60,14 @@ class Embedder:
         except Exception as e:
             logger.warning(f"OpenAI embedding failed: {e}")
         
-# Try NVIDIA (uses different model names, returns 1024 dim by default)
+        # Try NVIDIA (uses different model names, returns 1024 dim by default)
         if self.nvidia_client:
             try:
                 response = await self.nvidia_client.embeddings.create(
                     model="nvidia/nv-embedqa-e5-v5",
                     input=batch,
-                    encoding_format="float"
+                    encoding_format="float",
+                    extra_body={"input_type": "query"}
                 )
                 embeddings = [item.embedding for item in response.data]
                 # Pad or truncate to match expected dimensions

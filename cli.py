@@ -11,7 +11,6 @@ from pathlib import Path
 import typer
 from rich.console import Console
 from rich.table import Table
-from rich.progress import Progress, SpinnerColumn, TextColumn
 from loguru import logger
 
 from src.config import get_settings
@@ -48,24 +47,16 @@ def process(
         pipeline = Pipeline()
         
         try:
-            with Progress(
-                SpinnerColumn(),
-                TextColumn("[progress.description]{task.description}"),
-                console=console,
-            ) as progress:
-                
-                if len(urls) == 1:
-                    task = progress.add_task(f"Processing {urls[0]}...", total=None)
-                    result = await pipeline.process_url(urls[0])
-                    progress.update(task, completed=True)
-                    
-                    _display_result(result)
-                else:
-                    task = progress.add_task(f"Processing {len(urls)} URLs...", total=len(urls))
-                    results = await pipeline.process_batch(urls, max_concurrent=concurrent)
-                    progress.update(task, completed=len(urls))
-                    
-                    _display_batch_results(results)
+            await pipeline.initialize()
+            
+            console.print(f"Processing {urls[0]}...")
+            
+            if len(urls) == 1:
+                result = await pipeline.process_url(urls[0])
+                _display_result(result)
+            else:
+                results = await pipeline.process_batch(urls, max_concurrent=concurrent)
+                _display_batch_results(results)
         
         finally:
             await pipeline.close()
@@ -199,14 +190,17 @@ def entity(
 def _display_result(result):
     """Display single result."""
     if result.success:
-        console.print(f"\n[green]✓ Success:[/green] {result.url}")
-        console.print(f"  Chunks: {len(result.chunks)}")
-        console.print(f"  Entities: {len(result.entities)}")
-        console.print(f"  Categorized: {len(result.categorized_items)}")
-        console.print(f"  Time: {result.processing_time_ms}ms")
-        console.print(f"  Stages: {', '.join(s.value for s in result.stages_completed)}")
+        pr = result.processing_result
+        console.print(f"\n[green]Success:[/green] {result.url}")
+        if pr:
+            console.print(f"  Chunks: {len(pr.chunks)}")
+            console.print(f"  Entities: {len(pr.entities)}")
+            console.print(f"  Categorized: {len(pr.categorized_items)}")
+            console.print(f"  Time: {pr.processing_time_ms}ms")
+            stages = [s.value if hasattr(s, 'value') else s for s in pr.stages_completed]
+            console.print(f"  Stages: {', '.join(stages)}")
     else:
-        console.print(f"\n[red]✗ Failed:[/red] {result.url}")
+        console.print(f"\n[red]Failed:[/red] {result.url}")
         console.print(f"  Error: {result.error}")
 
 
@@ -220,7 +214,7 @@ def _display_batch_results(results):
     table.add_column("Time (ms)", justify="right")
     
     for r in results:
-        status = "[green]✓[/green]" if r.success else "[red]✗[/red]"
+        status = "[green]OK[/green]" if r.success else "[red]FAIL[/red]"
         table.add_row(
             r.url[:60] + "..." if len(r.url) > 60 else r.url,
             status,

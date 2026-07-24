@@ -19,6 +19,7 @@ class LLMProvider(str, Enum):
     OPENROUTER = "openrouter"
     NVIDIA = "nvidia"
     GOOGLE = "google"
+    OLLAMA = "ollama"
 
 
 @dataclass
@@ -67,6 +68,18 @@ MODEL_CONFIGS = {
     "gemini-1.5-flash": ModelConfig("gemini-1.5-flash", LLMProvider.GOOGLE, 8192, True, True, 0.000075, 0.0003),
     "gemini-1.0-pro": ModelConfig("gemini-1.0-pro", LLMProvider.GOOGLE, 4096, True, True, 0.0005, 0.0015),
     "gemini-2.0-flash-exp": ModelConfig("gemini-2.0-flash-exp", LLMProvider.GOOGLE, 8192, True, True, 0.000075, 0.0003),
+    
+    # Ollama models (local)
+    "llama3.1": ModelConfig("llama3.1", LLMProvider.OLLAMA, 8192, True, True, 0.0, 0.0),
+    "llama3.2": ModelConfig("llama3.2", LLMProvider.OLLAMA, 8192, True, True, 0.0, 0.0),
+    "llama3": ModelConfig("llama3", LLMProvider.OLLAMA, 8192, True, True, 0.0, 0.0),
+    "mistral": ModelConfig("mistral", LLMProvider.OLLAMA, 8192, True, True, 0.0, 0.0),
+    "mixtral": ModelConfig("mixtral", LLMProvider.OLLAMA, 8192, True, True, 0.0, 0.0),
+    "phi3": ModelConfig("phi3", LLMProvider.OLLAMA, 4096, True, True, 0.0, 0.0),
+    "qwen2.5": ModelConfig("qwen2.5", LLMProvider.OLLAMA, 8192, True, True, 0.0, 0.0),
+    "gemma2": ModelConfig("gemma2", LLMProvider.OLLAMA, 8192, True, True, 0.0, 0.0),
+    "codellama": ModelConfig("codellama", LLMProvider.OLLAMA, 8192, True, True, 0.0, 0.0),
+    "deepseek-coder": ModelConfig("deepseek-coder", LLMProvider.OLLAMA, 8192, True, True, 0.0, 0.0),
 }
 
 
@@ -98,6 +111,9 @@ class LLMClient:
         
         self.fallback_enabled = settings.LLM_FALLBACK_ENABLED
         
+        # Track preferred provider (last successful one)
+        self._preferred_provider: Optional[LLMProvider] = None
+        
         # Initialize clients
         self.openai_client = AsyncOpenAI(
             api_key=api_key or settings.OPENAI_API_KEY,
@@ -128,6 +144,12 @@ class LLMClient:
                 api_key=google_key or settings.GOOGLE_API_KEY,
                 base_url="https://generativelanguage.googleapis.com/v1beta/openai/"
             )
+        
+        # Ollama (local) - always available
+        self.ollama_client = AsyncOpenAI(
+            api_key=settings.OLLAMA_API_KEY,
+            base_url=settings.OLLAMA_BASE_URL,
+        )
         
         # Track usage
         self.usage_stats = {
@@ -192,6 +214,10 @@ class LLMClient:
 
     def _get_client_and_model_for_provider(self, provider: LLMProvider, model: str = None) -> tuple:
         """Get client and model for specific provider."""
+        # For Ollama, use the configured model name
+        if provider == LLMProvider.OLLAMA:
+            return self.ollama_client, model or settings.OLLAMA_CHAT_MODEL
+        
         model = model or (self.fallback_model if provider != self.primary_provider else self.primary_model)
         
         if provider == LLMProvider.OPENROUTER and self.openrouter_client:
@@ -227,6 +253,11 @@ class LLMClient:
         if use_fallback:
             chain = chain[1:]
         
+        # If we have a preferred provider that worked before, try it first
+        if self._preferred_provider and self._preferred_provider in chain:
+            chain.remove(self._preferred_provider)
+            chain.insert(0, self._preferred_provider)
+        
         # Filter to only available clients
         available_chain = []
         for p in chain:
@@ -237,6 +268,8 @@ class LLMClient:
             elif p == LLMProvider.NVIDIA and self.nvidia_client:
                 available_chain.append(p)
             elif p == LLMProvider.GOOGLE and self.google_client:
+                available_chain.append(p)
+            elif p == LLMProvider.OLLAMA and self.ollama_client:
                 available_chain.append(p)
         
         if not available_chain:
@@ -263,6 +296,9 @@ class LLMClient:
                 
                 if i > 0:
                     logger.info(f"Fallback succeeded with {provider.value} ({result['model']})")
+                
+                # Remember this provider as preferred for next call
+                self._preferred_provider = provider
                 
                 return result
                 
@@ -351,11 +387,12 @@ class LLMClient:
         return self.usage_stats.copy()
     
     def reset_stats(self):
-        """Reset usage statistics."""
+        """Reset usage statistics and preferred provider."""
         self.usage_stats = {
             "primary": {"calls": 0, "tokens": 0, "errors": 0},
             "fallback": {"calls": 0, "tokens": 0, "errors": 0}
         }
+        self._preferred_provider = None
     
     async def close(self):
         """Close all clients."""
@@ -366,6 +403,8 @@ class LLMClient:
             await self.nvidia_client.close()
         if self.google_client:
             await self.google_client.close()
+        if self.ollama_client:
+            await self.ollama_client.close()
 
 
 # Convenience function for quick usage
