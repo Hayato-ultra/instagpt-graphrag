@@ -1,13 +1,44 @@
-yt-dlp
-faster-whisper
-opencv-python
-Pillow
-imagehash
-neo4j
-groq
-python-dotenv
-sentence-transformers
-numpy
+# Web framework
 fastapi
 uvicorn[standard]
 python-multipart
+
+# Database
+sqlalchemy[asyncio]
+aiosqlite
+alembic
+
+# Pydantic
+pydantic
+pydantic-settings
+
+# LLM providers
+groq
+openai
+google-generativeai
+httpx
+
+# YouTube / video
+yt-dlp
+faster-whisper
+youtube-transcript-api
+
+# Web search
+tavily-python
+
+# Graph DB
+neo4j
+sentence-transformers
+
+# Image processing
+opencv-python
+Pillow
+imagehash
+
+# Utilities
+python-dotenv
+aiofiles
+python-dateutil
+numpy
+pypdf
+pdfplumber

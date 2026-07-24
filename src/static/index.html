@@ -1,0 +1,456 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>InstaGPT GraphRAG</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { 
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #0f172a; color: #e2e8f0; min-height: 100vh;
+        }
+        .container { max-width: 1200px; margin: 0 auto; padding: 24px; }
+        header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 32px; padding-bottom: 16px; border-bottom: 1px solid #1e293b; }
+        h1 { font-size: 1.5rem; font-weight: 600; color: #f8fafc; }
+        .btn { 
+            padding: 10px 20px; border: none; border-radius: 6px; font-size: 0.875rem; font-weight: 500; cursor: pointer;
+            transition: all 0.2s; display: inline-flex; align-items: center; gap: 8px;
+        }
+        .btn-primary { background: #3b82f6; color: white; }
+        .btn-primary:hover { background: #2563eb; }
+        .btn-secondary { background: #1e293b; color: #e2e8f0; border: 1px solid #334155; }
+        .btn-secondary:hover { background: #334155; }
+        .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+        
+        .card { background: #1e293b; border-radius: 12px; padding: 24px; margin-bottom: 24px; border: 1px solid #334155; }
+        .card h2 { font-size: 1.125rem; font-weight: 600; margin-bottom: 16px; color: #f8fafc; }
+        
+        .form-group { margin-bottom: 16px; }
+        label { display: block; font-size: 0.875rem; font-weight: 500; margin-bottom: 6px; color: #cbd5e1; }
+        textarea, input, select { 
+            width: 100%; padding: 10px 12px; border: 1px solid #334155; border-radius: 6px;
+            background: #0f172a; color: #e2e8f0; font-size: 0.875rem;
+        }
+        textarea { min-height: 120px; resize: vertical; font-family: monospace; }
+        .help-text { font-size: 0.75rem; color: #64748b; margin-top: 4px; }
+        
+        .url-list { display: flex; flex-direction: column; gap: 8px; }
+        .url-item { display: flex; gap: 8px; align-items: center; }
+        .url-item input { flex: 1; }
+        
+        .jobs-table { width: 100%; border-collapse: collapse; }
+        .jobs-table th, .jobs-table td { padding: 12px; text-align: left; border-bottom: 1px solid #334155; }
+        .jobs-table th { font-weight: 600; color: #94a3b8; font-size: 0.75rem; text-transform: uppercase; }
+        .jobs-table tr:hover { background: #334155; }
+        .status { padding: 4px 10px; border-radius: 999px; font-size: 0.75rem; font-weight: 500; }
+        .status-pending { background: #78716c; color: white; }
+        .status-running { background: #3b82f6; color: white; }
+        .status-completed { background: #22c55e; color: white; }
+        .status-failed { background: #ef4444; color: white; }
+        
+        .progress-bar { width: 100%; height: 6px; background: #334155; border-radius: 3px; overflow: hidden; }
+        .progress-fill { height: 100%; background: #3b82f6; transition: width 0.3s; }
+        
+        .results-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px; }
+        .result-card { background: #1e293b; border: 1px solid #334155; border-radius: 8px; padding: 16px; }
+        .result-card h4 { font-size: 0.875rem; font-weight: 600; margin-bottom: 8px; color: #f8fafc; }
+        .result-card .meta { font-size: 0.75rem; color: #94a3b8; margin-bottom: 12px; }
+        .result-card .actions { display: flex; gap: 8px; }
+        .result-card .btn { font-size: 0.75rem; padding: 6px 12px; }
+        
+        .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 16px; }
+        .stat-card { background: #1e293b; border: 1px solid #334155; border-radius: 8px; padding: 16px; text-align: center; }
+        .stat-value { font-size: 2rem; font-weight: 700; color: #3b82f6; }
+        .stat-label { font-size: 0.75rem; color: #94a3b8; margin-top: 4px; }
+        
+        .tabs { display: flex; gap: 4px; margin-bottom: 16px; border-bottom: 1px solid #334155; }
+        .tab { padding: 10px 16px; background: none; border: none; color: #94a3b8; font-size: 0.875rem; font-weight: 500; cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; }
+        .tab.active { color: #3b82f6; border-bottom-color: #3b82f6; }
+        .tab-content { display: none; }
+        .tab-content.active { display: block; }
+        
+        .search-results { display: flex; flex-direction: column; gap: 8px; }
+        .search-item { background: #1e293b; border: 1px solid #334155; border-radius: 8px; padding: 12px 16px; }
+        .search-item-header { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
+        .search-item-type { background: #3b82f6; color: white; padding: 2px 8px; border-radius: 4px; font-size: 0.625rem; font-weight: 600; }
+        .search-item-topic { background: #22c55e; color: white; padding: 2px 8px; border-radius: 4px; font-size: 0.625rem; font-weight: 600; }
+        .search-item-desc { font-size: 0.875rem; color: #cbd5e1; }
+        
+        .entity-detail { background: #1e293b; border: 1px solid #334155; border-radius: 8px; padding: 16px; margin-top: 16px; }
+        .entity-meta { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 16px; }
+        .entity-field { background: #0f172a; padding: 12px; border-radius: 6px; }
+        .entity-field label { font-size: 0.7rem; color: #64748b; text-transform: uppercase; }
+        .entity-field value { font-size: 0.875rem; color: #f8fafc; font-weight: 500; }
+        
+        .hidden { display: none !important; }
+        
+        @media (max-width: 768px) {
+            .container { padding: 16px; }
+            .results-grid { grid-template-columns: 1fr; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🕸️ InstaGPT GraphRAG</h1>
+            <div style="display: flex; gap: 12px; align-items: center;">
+                <span id="ws-status" class="status status-failed" style="font-size: 0.75rem;">Disconnected</span>
+                <button class="btn btn-secondary" onclick="refreshJobs()">🔄 Refresh</button>
+            </div>
+        </header>
+
+        <!-- Process URLs Tab -->
+        <div class="card">
+            <div class="tabs">
+                <button class="tab active" data-tab="process">Process URLs</button>
+                <button class="tab" data-tab="search">Search</button>
+                <button class="tab" data-tab="graph">Graph Stats</button>
+            </div>
+
+            <div class="tab-content active" id="tab-process">
+                <h2 style="margin-bottom: 16px;">Add URLs to Process</h2>
+                <div class="url-list" id="url-list">
+                    <div class="url-item">
+                        <input type="url" placeholder="https://example.com/article" required>
+                        <button class="btn btn-secondary" onclick="removeUrl(this)">✕</button>
+                    </div>
+                </div>
+                <button class="btn btn-secondary" onclick="addUrl()" style="margin-bottom: 16px;">+ Add URL</button>
+                
+                <div class="form-group">
+                    <label>Max Concurrent <span class="help-text">Number of URLs to process simultaneously</span></label>
+                    <input type="number" id="max-concurrent" value="3" min="1" max="10">
+                </div>
+                
+                <button class="btn btn-primary" onclick="startProcessing()" id="process-btn">
+                    <span id="process-btn-text">▶ Start Processing</span>
+                    <span id="process-spinner" class="hidden">⏳ Processing...</span>
+                </button>
+            </div>
+
+            <div class="tab-content hidden" id="tab-search">
+                <div class="form-group">
+                    <label>Search Query</label>
+                    <input type="text" id="search-query" placeholder="e.g., react, prisma, authentication">
+                </div>
+                <div class="form-group">
+                    <label>Filter by Topic (optional)</label>
+                    <select id="search-topic">
+                        <option value="">All Topics</option>
+                        <option value="frontend">Frontend</option>
+                        <option value="backend">Backend</option>
+                        <option value="devops">DevOps</option>
+                        <option value="ai_ml">AI/ML</option>
+                        <option value="database">Database</option>
+                        <option value="security">Security</option>
+                        <option value="testing">Testing</option>
+                        <option value="architecture">Architecture</option>
+                        <option value="performance">Performance</option>
+                        <option value="mobile">Mobile</option>
+                        <option value="cloud">Cloud</option>
+                    </select>
+                </div>
+                <button class="btn btn-primary" onclick="searchEntities()">🔍 Search</button>
+                <div id="search-results" class="search-results" style="margin-top: 16px;"></div>
+            </div>
+
+            <div class="tab-content hidden" id="tab-graph">
+                <div class="stats-grid" id="graph-stats">
+                    <div class="stat-card"><div class="stat-value">-</div><div class="stat-label">Total Nodes</div></div>
+                    <div class="stat-card"><div class="stat-value">-</div><div class="stat-label">Total Edges</div></div>
+                    <div class="stat-card"><div class="stat-value">-</div><div class="stat-label">Density</div></div>
+                </div>
+                <button class="btn btn-primary" onclick="loadGraphStats()" style="margin-top: 16px;">📊 Load Stats</button>
+                <button class="btn btn-secondary" onclick="exportGraph()">📥 Export GraphML</button>
+            </div>
+        </div>
+
+        <!-- Jobs List -->
+        <div class="card">
+            <h2>Processing Jobs</h2>
+            <div style="overflow-x: auto;">
+                <table class="jobs-table">
+                    <thead>
+                        <tr>
+                            <th>Job ID</th>
+                            <th>Status</th>
+                            <th>Progress</th>
+                            <th>URLs</th>
+                            <th>Created</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="jobs-body"></tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Results -->
+        <div class="card hidden" id="results-section">
+            <h2>Results</h2>
+            <div class="results-grid" id="results-grid"></div>
+        </div>
+    </div>
+
+    <script>
+        // WebSocket connection
+        let ws = null;
+        function connectWS() {
+            ws = new WebSocket(`ws://${location.host}/ws`);
+            ws.onopen = () => {
+                document.getElementById('ws-status').textContent = 'Connected';
+                document.getElementById('ws-status').className = 'status status-completed';
+            };
+            ws.onclose = () => {
+                document.getElementById('ws-status').textContent = 'Disconnected';
+                document.getElementById('ws-status').className = 'status status-failed';
+                setTimeout(connectWS, 3000);
+            };
+            ws.onmessage = (e) => {
+                const msg = JSON.parse(e.data);
+                handleWSMessage(msg);
+            };
+        }
+        connectWS();
+
+        function handleWSMessage(msg) {
+            if (msg.type === 'job_status' || msg.type === 'job_progress') {
+                updateJobInTable(msg.job);
+                if (msg.job.status === 'completed') {
+                    loadResults(msg.job.job_id);
+                }
+            }
+        }
+
+        // Tab switching
+        document.querySelectorAll('.tab').forEach(tab => {
+            tab.addEventListener('click', () => {
+                document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+                document.querySelectorAll('.tab-content').forEach(c => c.classList.add('hidden'));
+                tab.classList.add('active');
+                document.getElementById('tab-' + tab.dataset.tab).classList.remove('hidden');
+            });
+        });
+
+        // URL management
+        function addUrl() {
+            const list = document.getElementById('url-list');
+            const div = document.createElement('div');
+            div.className = 'url-item';
+            div.innerHTML = `
+                <input type="url" placeholder="https://example.com/article" required>
+                <button class="btn btn-secondary" onclick="removeUrl(this)">✕</button>
+            `;
+            list.appendChild(div);
+        }
+        function removeUrl(btn) {
+            const items = document.querySelectorAll('.url-item');
+            if (items.length > 1) btn.parentElement.remove();
+        }
+
+        // Processing
+        async function startProcessing() {
+            const urls = Array.from(document.querySelectorAll('#url-list input[type="url"]'))
+                .map(i => i.value.trim()).filter(v => v);
+            if (!urls.length) return alert('Add at least one URL');
+
+            const maxConcurrent = parseInt(document.getElementById('max-concurrent').value) || 3;
+            
+            document.getElementById('process-btn').disabled = true;
+            document.getElementById('process-btn-text').classList.add('hidden');
+            document.getElementById('process-spinner').classList.remove('hidden');
+
+            try {
+                const res = await fetch('/api/process', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({urls, max_concurrent: maxConcurrent})
+                });
+                const job = await res.json();
+                addJobToTable(job);
+            } catch (e) {
+                alert('Failed to start: ' + e.message);
+            } finally {
+                document.getElementById('process-btn').disabled = false;
+                document.getElementById('process-btn-text').classList.remove('hidden');
+                document.getElementById('process-spinner').classList.add('hidden');
+            }
+        }
+
+        // Jobs table
+        function addJobToTable(job) {
+            const tbody = document.getElementById('jobs-body');
+            const row = document.createElement('tr');
+            row.id = 'job-' + job.job_id;
+            row.innerHTML = `
+                <td>${job.job_id}</td>
+                <td><span class="status status-${job.status}">${job.status}</span></td>
+                <td><div class="progress-bar"><div class="progress-fill" style="width: ${job.progress}%"></div></div></td>
+                <td>${job.completed_urls}/${job.total_urls}</td>
+                <td>${new Date(job.created_at).toLocaleString()}</td>
+                <td>
+                    <button class="btn btn-secondary" onclick="viewJob('${job.job_id}')" style="font-size: 0.7rem; padding: 4px 8px;">View</button>
+                </td>
+            `;
+            tbody.prepend(row);
+        }
+        function updateJobInTable(job) {
+            const row = document.getElementById('job-' + job.job_id);
+            if (!row) return addJobToTable(job);
+            row.innerHTML = `
+                <td>${job.job_id}</td>
+                <td><span class="status status-${job.status}">${job.status}</span></td>
+                <td><div class="progress-bar"><div class="progress-fill" style="width: ${job.progress}%"></div></div></td>
+                <td>${job.completed_urls}/${job.total_urls}</td>
+                <td>${new Date(job.created_at).toLocaleString()}</td>
+                <td>
+                    <button class="btn btn-secondary" onclick="viewJob('${job.job_id}')" style="font-size: 0.7rem; padding: 4px 8px;">View</button>
+                </td>
+            `;
+        }
+        async function refreshJobs() {
+            try {
+                const res = await fetch('/api/jobs');
+                const jobs = await res.json();
+                document.getElementById('jobs-body').innerHTML = '';
+                jobs.forEach(addJobToTable);
+            } catch (e) { console.error(e); }
+        }
+        async function viewJob(jobId) {
+            try {
+                const res = await fetch('/api/jobs/' + jobId);
+                const job = await res.json();
+                loadResults(jobId);
+            } catch (e) { alert('Failed: ' + e.message); }
+        }
+
+        // Results
+        async function loadResults(jobId) {
+            document.getElementById('results-section').classList.remove('hidden');
+            const grid = document.getElementById('results-grid');
+            grid.innerHTML = '<div style="grid-column: 1/-1; text-align: center; color: #94a3b8;">Loading...</div>';
+            
+            try {
+                const res = await fetch('/api/jobs/' + jobId);
+                const job = await res.json();
+                
+                grid.innerHTML = job.results.map(r => `
+                    <div class="result-card">
+                        <h4>${r.url}</h4>
+                        <div class="meta">
+                            📦 ${r.entities} entities • 🏷️ ${r.categorized} categorized
+                        </div>
+                        <div class="actions">
+                            <button class="btn btn-secondary" onclick="viewOutput('${r.markdown}')">📄 Markdown</button>
+                            <button class="btn btn-secondary" onclick="viewOutput('${r.json}')">📋 JSON</button>
+                        </div>
+                    </div>
+                `).join('');
+            } catch (e) { grid.innerHTML = '<div style="color: #ef4444;">Failed to load</div>'; }
+        }
+        function viewOutput(path) {
+            window.open('/api/outputs/' + path.split('/').pop(), '_blank');
+        }
+
+        // Search
+        async function searchEntities() {
+            const query = document.getElementById('search-query').value.trim();
+            const topic = document.getElementById('search-topic').value;
+            if (!query) return alert('Enter a search query');
+            
+            const resultsDiv = document.getElementById('search-results');
+            resultsDiv.innerHTML = '<div style="text-align: center; color: #94a3b8;">Searching...</div>';
+            
+            try {
+                const res = await fetch('/api/search', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({query, topic: topic || null})
+                });
+                const data = await res.json();
+                
+                if (data.results.length === 0) {
+                    resultsDiv.innerHTML = '<div style="text-align: center; color: #94a3b8;">No results found</div>';
+                    return;
+                }
+                
+                resultsDiv.innerHTML = data.results.map(r => `
+                    <div class="search-item" onclick="showEntity('${r.name}')">
+                        <div class="search-item-header">
+                            <strong>${r.name}</strong>
+                            <span class="search-item-type">${r.type}</span>
+                            ${r.topic ? `<span class="search-item-topic">${r.topic}</span>` : ''}
+                        </div>
+                        <div class="search-item-desc">${r.description}...</div>
+                    </div>
+                `).join('');
+            } catch (e) {
+                resultsDiv.innerHTML = '<div style="color: #ef4444;">Search failed: ' + e.message + '</div>';
+            }
+        }
+
+        async function showEntity(name) {
+            try {
+                const res = await fetch('/api/entity', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({name})
+                });
+                const data = await res.json();
+                
+                const modal = document.createElement('div');
+                modal.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.8);display:flex;align-items:center;justify-content:center;z-index:1000;padding:20px;overflow:auto;';
+                modal.innerHTML = `
+                    <div style="background:#1e293b;border:1px solid #334155;border-radius:12px;padding:24px;max-width:700px;width:100%;max-height:90vh;overflow:auto;">
+                        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+                            <h2 style="margin:0;">${data.entity.name}</h2>
+                            <button onclick="this.closest('div').parentElement.remove()" style="background:none;border:none;color:#94a3b8;font-size:1.5rem;cursor:pointer;">×</button>
+                        </div>
+                        <div class="entity-meta">
+                            <div class="entity-field"><label>Type</label><value>${data.entity.type}</value></div>
+                            <div class="entity-field"><label>Topic</label><value>${data.entity.topic || 'N/A'}</value></div>
+                            <div class="entity-field"><label>Content Type</label><value>${data.entity.content_type}</value></div>
+                            <div class="entity-field"><label>Confidence</label><value>${(data.entity.confidence * 100).toFixed(0)}%</value></div>
+                        </div>
+                        <div style="margin-bottom:16px;"><strong>Description</strong><p style="margin-top:8px;color:#cbd5e1;">${data.entity.description}</p></div>
+                        <div><strong>Tags</strong><div style="margin-top:8px;display:flex;flex-wrap:wrap;gap:6px;">
+                            ${(data.entity.tags || []).map(t => `<span style="background:#334155;padding:2px 8px;border-radius:4px;font-size:0.75rem;">${t}</span>`).join('')}
+                        </div></div>
+                        <div style="margin-top:16px;"><strong>Related (${data.related.length})</strong>
+                            <div style="margin-top:8px;display:flex;flex-direction:column;gap:4px;">
+                                ${data.related.slice(0,10).map(r => `<div style="padding:8px;background:#0f172a;border-radius:6px;display:flex;justify-content:space-between;"><span>${r.name}</span><span style="color:#94a3b8;font-size:0.75rem;">${r.relation} (${r.type})</span></div>`).join('')}
+                            </div>
+                        </div>
+                    </div>
+                `;
+                document.body.appendChild(modal);
+            } catch (e) { alert('Failed: ' + e.message); }
+        }
+
+        // Graph stats
+        async function loadGraphStats() {
+            try {
+                const res = await fetch('/api/graph/stats');
+                const stats = await res.json();
+                document.getElementById('graph-stats').innerHTML = `
+                    <div class="stat-card"><div class="stat-value">${stats.total_nodes || 0}</div><div class="stat-label">Total Nodes</div></div>
+                    <div class="stat-card"><div class="stat-value">${stats.total_edges || 0}</div><div class="stat-label">Total Edges</div></div>
+                    <div class="stat-card"><div class="stat-value">${(stats.density * 100).toFixed(2)}%</div><div class="stat-label">Density</div></div>
+                    <div class="stat-card"><div class="stat-value">${stats.node_types?.entity || 0}</div><div class="stat-label">Entities</div></div>
+                    <div class="stat-card"><div class="stat-value">${stats.node_types?.topic || 0}</div><div class="stat-label">Topics</div></div>
+                    <div class="stat-card"><div class="stat-value">${stats.node_types?.episodic || 0}</div><div class="stat-label">Episodic</div></div>
+                `;
+            } catch (e) { console.error(e); }
+        }
+        function exportGraph() {
+            window.open('/api/graph/export?format=graphml', '_blank');
+        }
+
+        // Initialize
+        refreshJobs();
+        setInterval(refreshJobs, 5000);
+    </script>
+</body>
+</html>
