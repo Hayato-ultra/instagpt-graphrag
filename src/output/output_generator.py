@@ -1,8 +1,9 @@
 from typing import List, Dict, Any
 from datetime import datetime
 from pathlib import Path
+from collections import defaultdict
 
-from src.models import CategorizedItem, ProcessingResult
+from src.config.models import CategorizedItem, ProcessingResult
 from loguru import logger
 
 

@@ -8,7 +8,7 @@ from qdrant_client.http import models
 from qdrant_client.models import Distance, VectorParams, PointStruct
 
 from src.config import get_settings
-from src.models import DocumentChunk, EnrichedEntity
+from src.config.models import DocumentChunk, EnrichedEntity
 from loguru import logger
 
 
@@ -17,30 +17,87 @@ settings = get_settings()
 
 class Embedder:
     def __init__(self):
-        self.client = openai.AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+        self.openai_client = openai.AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+        self.nvidia_client = None
+        self.google_client = None
+        
+        if getattr(settings, 'NVIDIA_API_KEY', None):
+            self.nvidia_client = openai.AsyncOpenAI(
+                api_key=settings.NVIDIA_API_KEY,
+                base_url="https://integrate.api.nvidia.com/v1"
+            )
+        if getattr(settings, 'GOOGLE_API_KEY', None):
+            self.google_client = openai.AsyncOpenAI(
+                api_key=settings.GOOGLE_API_KEY,
+                base_url="https://generativelanguage.googleapis.com/v1beta/openai/"
+            )
+        
         self.model = settings.OPENAI_EMBEDDING_MODEL
         self.dimensions = settings.OPENAI_EMBEDDING_DIM
         self.batch_size = settings.EMBEDDING_BATCH_SIZE
 
     async def embed_texts(self, texts: List[str]) -> List[List[float]]:
-        """Embed a list of texts."""
+        """Embed a list of texts with fallback providers."""
         all_embeddings = []
         
         for i in range(0, len(texts), self.batch_size):
             batch = texts[i:i + self.batch_size]
-            try:
-                response = await self.client.embeddings.create(
-                    model=self.model,
-                    input=batch,
-                    dimensions=self.dimensions
-                )
-                embeddings = [item.embedding for item in response.data]
-                all_embeddings.extend(embeddings)
-            except Exception as e:
-                logger.error(f"Embedding batch {i//self.batch_size} failed: {e}")
-                raise
+            embeddings = await self._embed_batch_with_fallback(batch)
+            all_embeddings.extend(embeddings)
         
         return all_embeddings
+
+    async def _embed_batch_with_fallback(self, batch: List[str]) -> List[List[float]]:
+        """Try embedding with fallback providers."""
+        # Try OpenAI first
+        try:
+            response = await self.openai_client.embeddings.create(
+                model=self.model,
+                input=batch,
+                dimensions=self.dimensions
+            )
+            return [item.embedding for item in response.data]
+        except Exception as e:
+            logger.warning(f"OpenAI embedding failed: {e}")
+        
+# Try NVIDIA (uses different model names, returns 1024 dim by default)
+        if self.nvidia_client:
+            try:
+                response = await self.nvidia_client.embeddings.create(
+                    model="nvidia/nv-embedqa-e5-v5",
+                    input=batch,
+                    encoding_format="float"
+                )
+                embeddings = [item.embedding for item in response.data]
+                # Pad or truncate to match expected dimensions
+                return [self._adjust_dimensions(e) for e in embeddings]
+            except Exception as e:
+                logger.warning(f"NVIDIA embedding failed: {e}")
+        
+        # Try Google (gemini-embedding-001 returns 768 dim by default)
+        if self.google_client:
+            try:
+                response = await self.google_client.embeddings.create(
+                    model="gemini-embedding-001",
+                    input=batch
+                )
+                embeddings = [item.embedding for item in response.data]
+                # Pad or truncate to match expected dimensions
+                return [self._adjust_dimensions(e) for e in embeddings]
+            except Exception as e:
+                logger.warning(f"Google embedding failed: {e}")
+        
+        raise Exception("All embedding providers failed")
+    
+    def _adjust_dimensions(self, embedding: List[float]) -> List[float]:
+        """Adjust embedding to match expected dimensions."""
+        if len(embedding) == self.dimensions:
+            return embedding
+        elif len(embedding) > self.dimensions:
+            return embedding[:self.dimensions]
+        else:
+            # Pad with zeros
+            return embedding + [0.0] * (self.dimensions - len(embedding))
 
     async def embed_single(self, text: str) -> List[float]:
         """Embed a single text."""
@@ -162,9 +219,9 @@ class VectorStore:
                 must=[models.FieldCondition(key="type", match=models.MatchValue(value=filter_type))]
             )
         
-        results = self.client.search(
+        results = self.client.query_points(
             collection_name=self.collection_name,
-            query_vector=query_vector,
+            query=query_vector,
             limit=limit,
             query_filter=query_filter,
             score_threshold=score_threshold,
@@ -177,7 +234,7 @@ class VectorStore:
                 "score": r.score,
                 "payload": r.payload
             }
-            for r in results
+            for r in results.points
         ]
 
     def search_hybrid(
@@ -189,9 +246,9 @@ class VectorStore:
     ) -> List[Dict[str, Any]]:
         """Hybrid search combining vector and text search."""
         # Vector search
-        vector_results = self.client.search(
+        vector_results = self.client.query_points(
             collection_name=self.collection_name,
-            query_vector=query_vector,
+            query=query_vector,
             limit=limit * 2,
             with_payload=True
         )
@@ -241,7 +298,7 @@ class VectorStore:
         info = self.client.get_collection(self.collection_name)
         return {
             "name": info.config.params.vectors.size,
-            "vectors_count": info.vectors_count,
+            "vectors_count": info.indexed_vectors_count,
             "points_count": info.points_count,
             "status": info.status
         }

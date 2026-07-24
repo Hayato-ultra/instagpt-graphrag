@@ -9,8 +9,8 @@ from bs4 import BeautifulSoup
 from duckduckgo_search import DDGS
 
 from src.config import get_settings
-from src.models import DocumentChunk, EnrichedEntity, EntityType
-from src.llm_client import LLMClient
+from src.config.models import DocumentChunk, EnrichedEntity, EntityType
+from src.enrichment.llm_client import LLMClient
 from loguru import logger
 
 

@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from src.config import get_settings
-from src.models import (
+from src.config.models import (
     ProcessingResult, 
     PipelineStage,
     ExtractedContent,
@@ -13,12 +13,12 @@ from src.models import (
     EnrichedEntity,
     CategorizedItem,
 )
-from src.extractor import ContentExtractor, SemanticChunker
-from src.vector_store import Embedder, VectorStore
+from src.extraction import ContentExtractor, SemanticChunker
+from src.vector import Embedder, VectorStore
 from src.enrichment import EnrichmentPipeline
-from src.categorizer import Categorizer
-from src.output_generator import generate_outputs
-from src.neo4j_graph_store import Neo4jGraphStore, create_graph_store
+from src.enrichment.categorizer import Categorizer
+from src.output import generate_outputs
+from src.graph import Neo4jGraphStore, create_graph_store
 from loguru import logger
 
 
@@ -103,10 +103,7 @@ class KnowledgeGraphPipeline:
             
             # Stage 4: Enrich (detect entities + web search)
             logger.info("Stage 4: Enriching with entity detection & web search")
-            entities = []
-            for chunk in chunks:
-                chunk_entities = await self.enrichment.enrich_chunk(chunk)
-                entities.extend(chunk_entities)
+            entities = await self.enrichment.enrich(chunks)
             
             # Deduplicate entities by name
             entities = self._deduplicate_entities(entities)

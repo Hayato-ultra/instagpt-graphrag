@@ -11,7 +11,7 @@ from pathlib import Path
 
 from src.config import get_settings
 from src.pipeline import KnowledgeGraphPipeline
-from src.graph_store import GraphStore
+from src.graph import GraphStore
 from loguru import logger
 
 settings = get_settings()

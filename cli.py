@@ -16,7 +16,7 @@ from loguru import logger
 
 from src.config import get_settings
 from src.pipeline import KnowledgeGraphPipeline as Pipeline
-from src.graph_store import GraphStore
+from src.graph import GraphStore
 
 app = typer.Typer(
     name="instagpt-graphrag",

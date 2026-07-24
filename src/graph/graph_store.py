@@ -9,8 +9,8 @@ import networkx as nx
 from openai import AsyncOpenAI
 
 from src.config import get_settings
-from src.models import CategorizedItem, EnrichedEntity, EntityType, ContentType
-from src.vector_store import VectorStore
+from src.config.models import CategorizedItem, EnrichedEntity, EntityType, ContentType
+from src.vector import VectorStore
 from loguru import logger
 
 

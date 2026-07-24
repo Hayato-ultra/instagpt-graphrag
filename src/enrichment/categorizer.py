@@ -4,14 +4,14 @@ from collections import defaultdict
 import json
 
 from src.config import get_settings
-from src.models import (
+from src.config.models import (
     EnrichedEntity, 
     CategorizedItem, 
     TopicCategory, 
     ContentType,
     DocumentChunk
 )
-from src.llm_client import LLMClient
+from src.enrichment import LLMClient
 from loguru import logger
 
 

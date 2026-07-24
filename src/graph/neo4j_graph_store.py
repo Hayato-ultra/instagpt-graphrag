@@ -10,8 +10,8 @@ from neo4j import AsyncGraphDatabase, AsyncDriver
 from openai import AsyncOpenAI
 
 from src.config import get_settings
-from src.models import CategorizedItem, EnrichedEntity, EntityType, ContentType
-from src.vector_store import VectorStore
+from src.config.models import CategorizedItem, EnrichedEntity, EntityType, ContentType
+from src.vector import VectorStore
 from loguru import logger
 
 
@@ -144,30 +144,36 @@ class Neo4jGraphStore:
             score_threshold=self.SIMILAR_ENTITY_THRESHOLD
         )
         
-        existing_entity = None
+        existing_qdrant_id = None
+        existing_node_id = None
         
         for match in similar:
             if match["score"] >= self.SAME_ENTITY_THRESHOLD:
                 # SAME ENTITY - Update existing
-                existing_entity = match["id"]
-                await self._merge_into_existing(session, existing_entity, item, match["payload"])
-                result.updated_nodes += 1
+                existing_qdrant_id = match["id"]
+                existing_node_id = match["payload"].get("node_id")
+                if existing_node_id:
+                    await self._merge_into_existing(session, existing_node_id, item, match["payload"])
+                    result.updated_nodes += 1
                 break
             elif match["score"] >= self.SIMILAR_ENTITY_THRESHOLD:
                 # SIMILAR ENTITY - track for edge creation
-                if existing_entity is None:
-                    existing_entity = match["id"]
+                if existing_qdrant_id is None:
+                    existing_qdrant_id = match["id"]
+                    existing_node_id = match["payload"].get("node_id")
         
-        if existing_entity is None:
+        if existing_qdrant_id is None:
             # NEW ENTITY - Create new node
-            new_entity_id = await self._create_entity_node(session, item, embedding)
+            new_node_id = await self._create_entity_node(session, item, embedding)
             result.new_nodes += 1
             
             # Create SIMILAR_TO edges if similar entities found
             for match in similar:
                 if match["score"] >= self.SIMILAR_ENTITY_THRESHOLD:
-                    await self._create_similar_edge(session, new_entity_id, match["id"], match["score"])
-                    result.merged_edges += 1
+                    similar_node_id = match["payload"].get("node_id")
+                    if similar_node_id:
+                        await self._create_similar_edge(session, new_node_id, similar_node_id, match["score"])
+                        result.merged_edges += 1
         
         # Ensure topic hierarchy
         await self._ensure_topic_hierarchy(session, item)
@@ -178,10 +184,12 @@ class Neo4jGraphStore:
         """Create a new entity node in Neo4j."""
         entity = item.entity
         node_id = f"entity-{entity.name.lower().replace(' ', '-')}-{uuid4().hex[:8]}"
+        qdrant_id = str(uuid4())
         
         # Build properties
         props = {
             "id": node_id,
+            "qdrant_id": qdrant_id,
             "name": entity.name,
             "type": entity.type.value,
             "topic": item.primary_topic.value,
@@ -212,14 +220,15 @@ class Neo4jGraphStore:
         """
         await session.run(query, props=props)
         
-        # Also upsert in Qdrant for vector search
+        # Also upsert in Qdrant for vector search (use UUID for Qdrant ID)
         self.vector_store.client.upsert(
             collection_name=settings.QDRANT_COLLECTION,
             points=[{
-                "id": node_id,
+                "id": qdrant_id,
                 "vector": embedding,
                 "payload": {
                     "id": node_id,
+                    "qdrant_id": qdrant_id,
                     "name": entity.name,
                     "type": entity.type.value,
                     "topic": item.primary_topic.value,
@@ -257,6 +266,7 @@ class Neo4jGraphStore:
         
         if record:
             node_data = dict(record["e"])
+            qdrant_id = node_data.get("qdrant_id", existing_payload.get("qdrant_id", node_id))
             
             # Merge description with timestamp
             new_desc = f"\n\n--- UPDATE {datetime.utcnow().isoformat()} ---\n{entity.description}"
@@ -327,7 +337,7 @@ class Neo4jGraphStore:
                     "updated_at": update_props["updated_at"],
                     "confidence": update_props["confidence"]
                 },
-                points=[node_id]
+                points=[qdrant_id]
             )
     
     def _merge_web_info(self, existing: List[Dict], new: List[Dict]) -> List[Dict]:
@@ -461,8 +471,8 @@ class Neo4jGraphStore:
         stats = {}
         async with self.driver.session() as session:
             for key, query in queries.items():
-                result = await session.run(query).data()
-                stats[key] = result
+                result = await session.run(query)
+                stats[key] = await result.data()
         
         return stats
     
@@ -474,7 +484,8 @@ class Neo4jGraphStore:
         RETURN n, r, m
         """
         async with self.driver.session() as session:
-            records = await session.run(query).data()
+            result = await session.run(query)
+            records = await result.data()
             
             if format == "cypher":
                 lines = []

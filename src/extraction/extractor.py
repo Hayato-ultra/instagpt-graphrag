@@ -11,7 +11,7 @@ import trafilatura
 from playwright.async_api import async_playwright
 
 from src.config import get_settings
-from src.models import (
+from src.config.models import (
     ExtractedContent,
     DocumentChunk,
     PipelineStage,

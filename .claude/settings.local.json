@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python *)",
+      "Bash(findstr neo4j *)",
+      "Bash(netstat -ano)",
+      "Bash(findstr 7687)"
+    ]
+  }
+}
