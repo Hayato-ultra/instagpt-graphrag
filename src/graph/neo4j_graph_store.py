@@ -81,7 +81,6 @@ class Neo4jGraphStore:
             # Unique constraints
             "CREATE CONSTRAINT entity_name IF NOT EXISTS FOR (e:Entity) REQUIRE e.name IS UNIQUE",
             "CREATE CONSTRAINT topic_name IF NOT EXISTS FOR (t:Topic) REQUIRE t.name IS UNIQUE",
-            "CREATE CONSTRAINT subtopic_name IF NOT EXISTS FOR (s:SubTopic) REQUIRE s.name IS UNIQUE",
             "CREATE CONSTRAINT source_url IF NOT EXISTS FOR (s:Source) REQUIRE s.url IS UNIQUE",
             
             # Indexes for common queries
@@ -92,6 +91,9 @@ class Neo4jGraphStore:
             
             # Vector index for embeddings (Neo4j 5.11+)
             "CREATE VECTOR INDEX entity_embedding IF NOT EXISTS FOR (e:Entity) ON (e.embedding) OPTIONS {indexConfig: {`vector.dimensions`: 1536, `vector.similarity_function`: 'cosine'}}",
+            
+            # Fulltext search index for entity search
+            "CREATE FULLTEXT INDEX entity_search IF NOT EXISTS FOR (e:Entity) ON EACH [e.name, e.description, e.summary]",
         ]
         
         async with self.driver.session() as session:
@@ -124,11 +126,21 @@ class Neo4jGraphStore:
         return result
     
     async def _upsert_item(self, session, item: CategorizedItem) -> MergeResult:
-        """Upsert a single categorized item."""
+        """Upsert a single categorized item.
+        
+        Deduplication priority:
+        1. Exact name match (case-insensitive) + same topic/sub-topic → MERGE
+        2. Exact name match + different topic → NEW node (different context)
+        3. Embedding similarity >= 0.92 → MERGE
+        4. Embedding similarity 0.85-0.92 → NEW node + SIMILAR_TO edge
+        5. No match → NEW node
+        """
         result = MergeResult()
         entity = item.entity
+        topic_name = item.primary_topic.value
+        subtopic_name = item.sub_topics[0] if item.sub_topics else None
         
-        # Generate embedding for similarity check
+        # Generate embedding for similarity check (always needed for new nodes)
         if self.embedder:
             embedding = await self.embedder.embed_single(
                 f"{entity.name} {entity.description}"
@@ -136,7 +148,32 @@ class Neo4jGraphStore:
         else:
             embedding = [0.0] * settings.OPENAI_EMBEDDING_DIM
         
-        # Check for existing similar entities using Qdrant (vector similarity)
+        # Priority 1: Exact name match (case-insensitive)
+        name_match = await self._find_by_name(session, entity.name)
+        if name_match:
+            existing_topic = name_match.get("topic")
+            existing_subtopic = name_match.get("sub_topic")
+            
+            if existing_topic == topic_name and existing_subtopic == subtopic_name:
+                # SAME entity + SAME topic → MERGE into existing
+                existing_payload = {
+                    "id": name_match["id"],
+                    "node_id": name_match["id"],
+                    "qdrant_id": name_match.get("qdrant_id"),
+                    "description": name_match.get("description", ""),
+                }
+                await self._merge_into_existing(session, name_match["id"], item, existing_payload)
+                result.updated_nodes += 1
+                return result
+            else:
+                # SAME entity + DIFFERENT topic → NEW node (different context)
+                new_node_id = await self._create_entity_node(session, item, embedding)
+                result.new_nodes += 1
+                # Ensure topic hierarchy
+                await self._ensure_topic_hierarchy(session, item)
+                return result
+        
+        # Priority 2: Embedding similarity (fuzzy match)
         similar = self.vector_store.search_similar(
             query_vector=embedding,
             limit=5,
@@ -149,7 +186,7 @@ class Neo4jGraphStore:
         
         for match in similar:
             if match["score"] >= self.SAME_ENTITY_THRESHOLD:
-                # SAME ENTITY - Update existing
+                # SAME ENTITY (by embedding) - Update existing
                 existing_qdrant_id = match["id"]
                 existing_node_id = match["payload"].get("node_id")
                 if existing_node_id:
@@ -179,6 +216,23 @@ class Neo4jGraphStore:
         await self._ensure_topic_hierarchy(session, item)
         
         return result
+    
+    async def _find_by_name(self, session, name: str) -> Optional[Dict]:
+        """Find existing entity by exact name match (case-insensitive).
+        
+        Returns entity info with topic/subtopic context, or None if not found.
+        """
+        query = """
+        MATCH (e:Entity)
+        WHERE toLower(e.name) = toLower($name)
+        OPTIONAL MATCH (e)-[:BELONGS_TO]->(t:Topic)
+        OPTIONAL MATCH (e)-[:BELONGS_TO]->(s:SubTopic)
+        RETURN e.id as id, e.name as name, e.qdrant_id as qdrant_id,
+               e.description as description, t.name as topic, s.name as sub_topic
+        LIMIT 1
+        """
+        record = await session.run(query, name=name).single()
+        return dict(record) if record else None
     
     async def _create_entity_node(self, session, item: CategorizedItem, embedding: List[float]) -> str:
         """Create a new entity node in Neo4j."""
@@ -386,11 +440,11 @@ class Neo4jGraphStore:
         """
         await session.run(topic_query, topic_name=topic_name, created_at=datetime.utcnow().isoformat())
         
-        # Create subtopic nodes
+        # Create subtopic nodes (scoped to parent topic)
         for subtopic in item.sub_topics:
             subtopic_query = """
-            MERGE (s:SubTopic {name: $subtopic})
-            ON CREATE SET s.created_at = $created_at, s.parent_topic = $topic_name
+            MERGE (s:SubTopic {name: $subtopic, parent_topic: $topic_name})
+            ON CREATE SET s.created_at = $created_at
             WITH s
             MATCH (t:Topic {name: $topic_name})
             MERGE (s)-[:PART_OF]->(t)

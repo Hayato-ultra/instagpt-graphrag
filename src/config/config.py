@@ -16,7 +16,7 @@ class Settings(BaseSettings):
     LOG_LEVEL: str = "INFO"
 
     # LLM Provider Selection
-    LLM_PROVIDER: str = "openai"  # openai, openrouter, nvidia, google
+    LLM_PROVIDER: str = "openai"  # openai, openrouter, nvidia, google, ollama, colab
     LLM_FALLBACK_ENABLED: bool = True
     LLM_FALLBACK_CHAIN: str = "openrouter,nvidia,google"  # comma-separated fallback order
 
@@ -40,8 +40,13 @@ class Settings(BaseSettings):
 
     # Ollama (Local LLM)
     OLLAMA_BASE_URL: str = "http://localhost:11434/v1"
-    OLLAMA_CHAT_MODEL: str = "llama3.1"
+    OLLAMA_CHAT_MODEL: str = "qwen2.5:7b"
     OLLAMA_API_KEY: str = "ollama"  # Not needed, but required for OpenAI client
+
+    # Colab (Remote LLM via Google Colab + vLLM)
+    COLAB_BASE_URL: str = ""  # Set to ngrok URL from Colab notebook
+    COLAB_CHAT_MODEL: str = "Qwen/Qwen2.5-7B-Instruct"
+    COLAB_API_KEY: str = "not-needed"  # vLLM default, no auth required
 
     # Qdrant Vector DB
     QDRANT_URL: str = "http://localhost:6333"

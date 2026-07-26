@@ -1,57 +1,29 @@
-version: "3.9"
-
 services:
-  postgres:
-    image: pgvector/pgvector:pg16
-    container_name: kgai-postgres
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: instagpt-qdrant
     restart: unless-stopped
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
     environment:
-      POSTGRES_USER: ${POSTGRES_USER:-kgai}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-kgai_secret}
-      POSTGRES_DB: ${POSTGRES_DB:-knowledge_graph}
-    ports:
-      - "5432:5432"
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-      - ./backend/init.sql:/docker-entrypoint-initdb.d/init.sql
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-kgai}"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
+      QDRANT__SERVICE__GRPC_PORT: 6334
 
-  backend:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
-    container_name: kgai-backend
+  neo4j:
+    image: neo4j:5
+    container_name: instagpt-neo4j
     restart: unless-stopped
-    env_file:
-      - .env
+    ports:
+      - "7474:7474"
+      - "7687:7687"
     environment:
-      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-kgai}:${POSTGRES_PASSWORD:-kgai_secret}@postgres:5432/${POSTGRES_DB:-knowledge_graph}
-    ports:
-      - "8000:8000"
-    depends_on:
-      postgres:
-        condition: service_healthy
+      NEO4J_AUTH: ${NEO4J_USER:-neo4j}/${NEO4J_PASSWORD:-password}
+      NEO4J_PLUGINS: '["apoc"]'
     volumes:
-      - ./backend:/app
-      - ./backend/prompts:/app/prompts
-
-  frontend:
-    build:
-      context: ./frontend
-      dockerfile: Dockerfile
-    container_name: kgai-frontend
-    restart: unless-stopped
-    ports:
-      - "3000:3000"
-    depends_on:
-      - backend
-    volumes:
-      - ./frontend/src:/app/src
-      - ./frontend/public:/app/public
+      - neo4j_data:/data
 
 volumes:
-  pgdata:
+  qdrant_data:
+  neo4j_data:

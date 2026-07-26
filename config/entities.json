@@ -1,0 +1,111 @@
+{
+  "entity_patterns": {
+    "framework": [
+      "react", "vue", "svelte", "angular", "next.js", "nuxt", "astro", "remix", "solid", "qwik",
+      "django", "fastapi", "flask", "express", "nest.js", "spring", "laravel", "rails",
+      "tailwind", "bootstrap", "material-ui", "chakra", "shadcn", "radix"
+    ],
+    "library": [
+      "prisma", "drizzle", "sqlalchemy", "typeorm", "mongoose", "drizzle-orm",
+      "lodash", "axios", "react-query", "swr", "zustand", "redux", "jotai", "recoil",
+      "jest", "vitest", "playwright", "cypress", "pytest"
+    ],
+    "platform": [
+      "aws", "gcp", "azure", "vercel", "netlify", "railway", "render", "fly.io", "cloudflare",
+      "kubernetes", "k8s", "docker", "terraform", "ansible"
+    ],
+    "service": [
+      "stripe", "auth0", "clerk", "supabase", "firebase", "planetscale", "neon",
+      "github", "gitlab", "bitbucket"
+    ],
+    "database": [
+      "postgres", "mysql", "mongodb", "redis", "sqlite", "planetscale", "neon"
+    ],
+    "tool": [
+      "vscode", "intellij", "vim", "neovim", "cursor", "windsurf", "zed",
+      "github copilot", "claude", "chatgpt", "gemini"
+    ],
+    "web_app": [
+      "saas", "dashboard", "admin panel", "web app"
+    ],
+    "mobile_app": [
+      "react native", "expo", "flutter", "ios", "android", "swift", "kotlin"
+    ],
+    "language": [
+      "typescript", "javascript", "python", "rust", "golang", "java"
+    ],
+    "api": [
+      "rest api", "graphql", "grpc", "webhook"
+    ],
+    "creative_software": [
+      "blender", "unity", "unreal", "unreal engine", "maya", "cinema 4d", "c4d",
+      "3ds max", "houdini", "zbrush", "mudbox", "substance painter",
+      "substance designer", "after effects", "premiere pro", "final cut",
+      "davinci resolve", "photoshop", "illustrator", "figma", "sketch",
+      "d5 render", "vray", "corona", "octane", "redshift", "arnold"
+    ]
+  },
+  "known_entities": [
+    "react", "vue", "svelte", "angular", "next.js", "nuxt", "astro", "remix",
+    "django", "fastapi", "flask", "express", "nest.js", "spring", "laravel",
+    "tailwind", "bootstrap", "material-ui", "chakra", "shadcn", "radix",
+    "prisma", "drizzle", "sqlalchemy", "typeorm", "mongoose",
+    "postgresql", "mysql", "mongodb", "redis", "sqlite", "planetscale", "neon",
+    "aws", "gcp", "azure", "vercel", "netlify", "railway", "render", "fly.io",
+    "kubernetes", "docker", "terraform", "ansible",
+    "stripe", "auth0", "clerk", "supabase", "firebase",
+    "github", "gitlab", "bitbucket",
+    "vscode", "intellij", "vim", "neovim", "cursor", "windsurf",
+    "jest", "vitest", "playwright", "cypress", "pytest",
+    "react native", "expo", "flutter",
+    "typescript", "javascript", "python", "rust", "java", "kotlin",
+    "blender", "unity", "unreal", "unreal engine", "maya", "cinema 4d", "c4d",
+    "3ds max", "houdini", "zbrush", "mudbox", "substance painter",
+    "substance designer", "after effects", "premiere pro", "final cut",
+    "davinci resolve", "photoshop", "illustrator", "figma", "sketch",
+    "d5 render", "vray", "corona", "octane", "redshift", "arnold"
+  ],
+  "blacklist_words": [
+    "follow", "followed", "following", "follows",
+    "like", "liked", "likes", "liking",
+    "comment", "commented", "comments",
+    "share", "shared", "shares", "sharing",
+    "save", "saved", "saves", "saving",
+    "view", "views", "viewing",
+    "post", "posted", "posts", "posting",
+    "reel", "reels", "story", "stories",
+    "feed", "feeds", "explore", "discover",
+    "tag", "tags", "tagged", "hashtag",
+    "mention", "mentions", "mentioned",
+    "dm", "dms", "inbox", "message", "messages",
+    "profile", "bio", "username", "account",
+    "notifications", "notification", "alert", "alerts",
+    "search", "filter", "filters",
+    "subscribe", "subscriber", "subscribers", "subscription",
+    "trending", "viral", "popular",
+    "first", "second", "third", "last", "next", "prev",
+    "new", "old", "best", "top", "good", "bad", "great",
+    "more", "less", "many", "few", "some", "all",
+    "this", "that", "these", "those", "what", "which",
+    "who", "how", "when", "where", "why",
+    "can", "could", "would", "should", "will",
+    "make", "made", "making", "do", "done", "doing",
+    "get", "got", "getting", "give", "given", "giving",
+    "take", "taken", "taking", "put", "putting",
+    "see", "seen", "seeing", "look", "looking",
+    "go", "going", "went", "gone", "come", "coming",
+    "use", "used", "using", "try", "tried", "trying",
+    "need", "needed", "want", "wanted", "keep", "kept",
+    "let", "set", "run", "ran", "start", "started",
+    "check", "checked", "create", "created", "add", "added",
+    "find", "found", "tell", "told", "ask", "asked",
+    "work", "worked", "working", "call", "called",
+    "show", "shown", "showing", "turn", "turned",
+    "help", "helped", "helping", "move", "moved",
+    "play", "played", "playing", "live", "living",
+    "stop", "stopped", "wait", "waiting",
+    "think", "thought", "feel", "felt",
+    "know", "known", "say", "said"
+  ],
+  "min_entity_length": 3
+}

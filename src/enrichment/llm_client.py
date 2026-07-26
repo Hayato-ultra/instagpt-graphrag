@@ -20,6 +20,7 @@ class LLMProvider(str, Enum):
     NVIDIA = "nvidia"
     GOOGLE = "google"
     OLLAMA = "ollama"
+    COLAB = "colab"
 
 
 @dataclass
@@ -77,9 +78,14 @@ MODEL_CONFIGS = {
     "mixtral": ModelConfig("mixtral", LLMProvider.OLLAMA, 8192, True, True, 0.0, 0.0),
     "phi3": ModelConfig("phi3", LLMProvider.OLLAMA, 4096, True, True, 0.0, 0.0),
     "qwen2.5": ModelConfig("qwen2.5", LLMProvider.OLLAMA, 8192, True, True, 0.0, 0.0),
+    "qwen2.5:7b": ModelConfig("qwen2.5:7b", LLMProvider.OLLAMA, 8192, True, True, 0.0, 0.0),
     "gemma2": ModelConfig("gemma2", LLMProvider.OLLAMA, 8192, True, True, 0.0, 0.0),
     "codellama": ModelConfig("codellama", LLMProvider.OLLAMA, 8192, True, True, 0.0, 0.0),
     "deepseek-coder": ModelConfig("deepseek-coder", LLMProvider.OLLAMA, 8192, True, True, 0.0, 0.0),
+    
+    # Colab models (remote via Google Colab + vLLM)
+    "Qwen/Qwen2.5-7B-Instruct": ModelConfig("Qwen/Qwen2.5-7B-Instruct", LLMProvider.COLAB, 4096, True, True, 0.0, 0.0),
+    "qwen-2.5-7b": ModelConfig("Qwen/Qwen2.5-7B-Instruct", LLMProvider.COLAB, 4096, True, True, 0.0, 0.0),
 }
 
 
@@ -151,6 +157,14 @@ class LLMClient:
             base_url=settings.OLLAMA_BASE_URL,
         )
         
+        # Colab (remote via Google Colab + vLLM)
+        self.colab_client = None
+        if getattr(settings, 'COLAB_BASE_URL', None) and settings.COLAB_BASE_URL:
+            self.colab_client = AsyncOpenAI(
+                api_key=settings.COLAB_API_KEY or "not-needed",
+                base_url=settings.COLAB_BASE_URL,
+            )
+        
         # Track usage
         self.usage_stats = {
             "primary": {"calls": 0, "tokens": 0, "errors": 0},
@@ -218,6 +232,10 @@ class LLMClient:
         if provider == LLMProvider.OLLAMA:
             return self.ollama_client, model or settings.OLLAMA_CHAT_MODEL
         
+        # For Colab, use the configured model name
+        if provider == LLMProvider.COLAB:
+            return self.colab_client, model or settings.COLAB_CHAT_MODEL
+        
         model = model or (self.fallback_model if provider != self.primary_provider else self.primary_model)
         
         if provider == LLMProvider.OPENROUTER and self.openrouter_client:
@@ -270,6 +288,8 @@ class LLMClient:
             elif p == LLMProvider.GOOGLE and self.google_client:
                 available_chain.append(p)
             elif p == LLMProvider.OLLAMA and self.ollama_client:
+                available_chain.append(p)
+            elif p == LLMProvider.COLAB and self.colab_client:
                 available_chain.append(p)
         
         if not available_chain:
@@ -405,6 +425,8 @@ class LLMClient:
             await self.google_client.close()
         if self.ollama_client:
             await self.ollama_client.close()
+        if self.colab_client:
+            await self.colab_client.close()
 
 
 # Convenience function for quick usage

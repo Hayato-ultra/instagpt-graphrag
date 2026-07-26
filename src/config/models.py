@@ -30,6 +30,7 @@ class EntityType(str, Enum):
     API = "api"
     DATABASE = "database"
     LANGUAGE = "language"
+    CREATIVE_SOFTWARE = "creative_software"
     UNKNOWN = "unknown"
 
 
@@ -78,6 +79,7 @@ class EnrichedEntity(BaseModel):
     similar_tools: List[Dict[str, Any]] = Field(default_factory=list)
     source_chunk_id: str
     source_url: str
+    source_text: str = ""  # Full source transcript for LLM context
     confidence: float = 0.0
     mentioned_at: datetime = Field(default_factory=datetime.utcnow)
 

@@ -1,19 +1,17 @@
 import asyncio
-from typing import List, Dict, Any, Optional
-from collections import defaultdict
 import json
+import re
+
+from loguru import logger
 
 from src.config import get_settings
 from src.config.models import (
-    EnrichedEntity, 
-    CategorizedItem, 
-    TopicCategory, 
+    CategorizedItem,
     ContentType,
-    DocumentChunk
+    EnrichedEntity,
+    TopicCategory,
 )
 from src.enrichment import LLMClient
-from loguru import logger
-
 
 settings = get_settings()
 
@@ -93,40 +91,140 @@ class Categorizer:
     def __init__(self):
         self.llm = LLMClient()
         self.model = settings.OPENAI_CHAT_MODEL
-    
-    async def categorize(self, entities: List[EnrichedEntity]) -> List[CategorizedItem]:
-        """Categorize all entities."""
+
+    async def categorize(self, entities: list[EnrichedEntity]) -> list[CategorizedItem]:
+        """Categorize all entities with concurrent LLM calls."""
+        if not entities:
+            return []
+
+        semaphore = asyncio.Semaphore(5)
+
+        async def _run(entity: EnrichedEntity) -> CategorizedItem:
+            async with semaphore:
+                return await self._categorize_entity(entity)
+
+        results = await asyncio.gather(*[_run(e) for e in entities], return_exceptions=True)
+
         categorized = []
-        
-        for entity in entities:
-            item = await self._categorize_entity(entity)
-            categorized.append(item)
-        
+        for entity, result in zip(entities, results):
+            if isinstance(result, Exception):
+                logger.warning(f"Categorization failed for {entity.name}: {result}")
+                categorized.append(self._fallback_categorize(entity))
+            else:
+                categorized.append(result)
+
         return categorized
-    
+
     async def _categorize_entity(self, entity: EnrichedEntity) -> CategorizedItem:
-        """Categorize a single entity."""
-        # Prepare text for classification
+        """Categorize a single entity with one LLM call."""
         text = self._prepare_text(entity)
-        
-        # Classify primary topic
-        primary_topic, topic_confidence = await self._classify_topic(text)
-        
-        # Classify sub-topics
-        sub_topics = await self._classify_subtopics(text, primary_topic)
-        
-        # Classify content type
-        content_type, type_confidence = await self._classify_content_type(text)
-        
-        # Extract tags
-        tags = await self._extract_tags(entity, primary_topic, sub_topics)
-        
-        # Generate summary
-        summary = await self._generate_summary(entity)
-        
-        # Extract key points
-        key_points = await self._extract_key_points(entity)
-        
+        topics = [t.value for t in TopicCategory]
+        content_type_defs = "\n".join(
+            f"- {k.value}: {v}" for k, v in CONTENT_TYPE_DEFINITIONS.items()
+        )
+        all_subtopics = {t.value: subs for t, subs in TOPIC_TAXONOMY.items()}
+
+        prompt = f"""Analyze the following tech content and return a JSON object
+with ALL of these fields:
+
+1. "topic": ONE of [{", ".join(topics)}]
+2. "topic_confidence": float 0.0-1.0
+3. "subtopics": array of 1-3 strings from the subtopics list matching the chosen topic
+4. "content_type": ONE of the content types below
+5. "type_confidence": float 0.0-1.0
+6. "summary": 1-2 sentence summary OF THE SOURCE CONTENT
+7. "key_points": array of 3-5 key points FROM THE SOURCE
+
+Content type definitions:
+{content_type_defs}
+
+Available subtopics per topic:
+{json.dumps(all_subtopics, indent=2)}
+
+Content to analyze:
+{text}
+
+IMPORTANT: The summary and key_points must come FROM THE SOURCE CONTENT.
+If the source says "select X then press Y", include that in key_points.
+
+Example response format:
+{{
+  "topic": "creative_software",
+  "topic_confidence": 0.9,
+  "subtopics": ["3d-modeling"],
+  "content_type": "tutorial",
+  "type_confidence": 0.85,
+  "summary": "Video shows how to create custom axes in Blender.",
+  "key_points": ["Select Transform Orientations > Local", "Press + to create axis"]
+}}
+
+Return ONLY valid JSON."""
+
+        result = await self.llm.chat_completion(
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a content analyzer. Extract and summarize "
+                        "information FROM THE SOURCE ONLY. The summary should "
+                        "describe what the content says, not what the entity is. "
+                        "Key points should be specific steps, actions, or "
+                        "instructions from the source. Return valid JSON."
+                    ),
+                },
+                {"role": "user", "content": prompt},
+            ],
+            model=self.model,
+            temperature=0.1,
+            max_tokens=500,
+            response_format={"type": "json_object"},
+        )
+
+        content = result["content"].strip()
+
+        # Try to extract JSON from response (handle markdown code blocks)
+        json_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", content, re.DOTALL)
+        if json_match:
+            content = json_match.group(1)
+        elif not content.startswith("{"):
+            # Try to find JSON object in response
+            brace_start = content.find("{")
+            brace_end = content.rfind("}")
+            if brace_start != -1 and brace_end != -1:
+                content = content[brace_start:brace_end + 1]
+
+        data = json.loads(content)
+
+        # Parse topic
+        topic_str = data.get("topic", "other")
+        topic_confidence = float(data.get("topic_confidence", 0.5))
+        try:
+            primary_topic = TopicCategory(topic_str)
+        except ValueError:
+            primary_topic = TopicCategory.OTHER
+
+        # Parse subtopics — validate against taxonomy for the chosen topic
+        raw_subtopics = data.get("subtopics", [])
+        valid_subtopics = TOPIC_TAXONOMY.get(primary_topic, [])
+        sub_topics = [s for s in raw_subtopics if s in valid_subtopics][:3]
+
+        # Parse content type
+        type_str = data.get("content_type", "unknown")
+        type_confidence = float(data.get("type_confidence", 0.5))
+        try:
+            content_type = ContentType(type_str)
+        except ValueError:
+            content_type = ContentType.UNKNOWN
+
+        # Parse summary and key points
+        summary = data.get("summary", "").strip() or entity.description[:200]
+        key_points = data.get("key_points", [])
+        if not isinstance(key_points, list):
+            key_points = []
+
+        # Tags — local, no LLM call
+        tags = self._extract_tags(entity, primary_topic, sub_topics)
+
         return CategorizedItem(
             entity=entity,
             primary_topic=primary_topic,
@@ -136,147 +234,33 @@ class Categorizer:
             type_confidence=type_confidence,
             tags=tags,
             summary=summary,
-            key_points=key_points
+            key_points=key_points,
         )
-    
+
     def _prepare_text(self, entity: EnrichedEntity) -> str:
         """Prepare text for classification."""
         web_snippets = " ".join(w.get("snippet", "") for w in entity.web_info[:5])
-        return f"""
-        Name: {entity.name}
-        Type: {entity.type.value}
-        Description: {entity.description}
-        Context: {web_snippets}
-        """
-    
-    async def _classify_topic(self, text: str) -> tuple[TopicCategory, float]:
-        """Classify primary topic using LLM."""
-        topics = [t.value for t in TopicCategory]
-        
-        prompt = f"""
-        Classify the following tech content into ONE primary topic:
-        
-        Topics: {", ".join(topics)}
-        
-        Content:
-        {text}
-        
-        Return JSON: {{"topic": "topic_name", "confidence": 0.0-1.0}}
-        """
-        
-        try:
-            result = await self.llm.chat_completion(
-                messages=[
-                    {"role": "system", "content": "Classify tech content into topics."},
-                    {"role": "user", "content": prompt}
-                ],
-                model=self.model,
-                temperature=0.1,
-                response_format={"type": "json_object"}
-            )
-            
-            data = json.loads(result["content"])
-            topic_str = data.get("topic", "other")
-            confidence = float(data.get("confidence", 0.5))
-            
-            try:
-                topic = TopicCategory(topic_str)
-            except ValueError:
-                topic = TopicCategory.OTHER
-            
-            return topic, confidence
-        except Exception as e:
-            logger.warning(f"Topic classification failed: {e}")
-            return TopicCategory.OTHER, 0.5
-    
-    async def _classify_subtopics(self, text: str, primary_topic: TopicCategory) -> List[str]:
-        """Classify sub-topics within primary topic."""
-        subtopics = TOPIC_TAXONOMY.get(primary_topic, [])
-        if not subtopics:
-            return []
-        
-        prompt = f"""
-        From the following sub-topics for "{primary_topic.value}", select 1-3 that best match the content:
-        
-        Sub-topics: {", ".join(subtopics)}
-        
-        Content:
-        {text}
-        
-        Return JSON: {{"subtopics": ["sub1", "sub2"]}}
-        """
-        
-        try:
-            result = await self.llm.chat_completion(
-                messages=[
-                    {"role": "system", "content": "Select relevant sub-topics."},
-                    {"role": "user", "content": prompt}
-                ],
-                model=self.model,
-                temperature=0.1,
-                response_format={"type": "json_object"}
-            )
-            
-            data = json.loads(result["content"])
-            return data.get("subtopics", [])
-        except Exception as e:
-            logger.warning(f"Sub-topic classification failed: {e}")
-            return []
-    
-    async def _classify_content_type(self, text: str) -> tuple[ContentType, float]:
-        """Classify content type."""
-        types = [t.value for t in ContentType]
-        definitions = "\n".join(f"- {k.value}: {v}" for k, v in CONTENT_TYPE_DEFINITIONS.items())
-        
-        prompt = f"""
-        Classify the content type:
-        
-        Types and definitions:
-        {definitions}
-        
-        Content:
-        {text}
-        
-        Return JSON: {{"type": "type_name", "confidence": 0.0-1.0}}
-        """
-        
-        try:
-            result = await self.llm.chat_completion(
-                messages=[
-                    {"role": "system", "content": "Classify content type."},
-                    {"role": "user", "content": prompt}
-                ],
-                model=self.model,
-                temperature=0.1,
-                response_format={"type": "json_object"}
-            )
-            
-            data = json.loads(result["content"])
-            type_str = data.get("type", "unknown")
-            confidence = float(data.get("confidence", 0.5))
-            
-            try:
-                ctype = ContentType(type_str)
-            except ValueError:
-                ctype = ContentType.UNKNOWN
-            
-            return ctype, confidence
-        except Exception as e:
-            logger.warning(f"Content type classification failed: {e}")
-            return ContentType.UNKNOWN, 0.5
-    
-    async def _extract_tags(
-        self, 
-        entity: EnrichedEntity, 
+        # Use source_text if available, otherwise fall back to description
+        source_content = entity.source_text[:500] if entity.source_text else ""
+        return (
+            f"Name: {entity.name}\n"
+            f"Type: {entity.type.value}\n"
+            f"Source Content: {source_content}\n"
+            f"Description: {entity.description}\n"
+            f"Web: {web_snippets}"
+        )
+
+    def _extract_tags(
+        self,
+        entity: EnrichedEntity,
         primary_topic: TopicCategory,
-        sub_topics: List[str]
-    ) -> List[str]:
-        """Extract relevant tags."""
+        sub_topics: list[str],
+    ) -> list[str]:
+        """Extract relevant tags (local, no LLM call)."""
         tags = [primary_topic.value]
         tags.extend(sub_topics)
         tags.append(entity.type.value)
-        
-        # Add entity-specific tags from name
+
         name_lower = entity.name.lower()
         tech_keywords = [
             "react", "vue", "svelte", "angular", "nextjs", "nuxt", "astro",
@@ -288,69 +272,27 @@ class Categorizer:
             "openai", "anthropic", "langchain", "llamaindex",
             "jest", "vitest", "playwright", "cypress", "pytest",
         ]
-        
+
         for kw in tech_keywords:
             if kw in name_lower:
                 tags.append(kw)
-        
-        return list(set(tags))  # deduplicate
-    
-    async def _generate_summary(self, entity: EnrichedEntity) -> str:
-        """Generate a concise summary."""
-        prompt = f"""
-        Write a 1-2 sentence summary of "{entity.name}" ({entity.type.value}):
-        {entity.description[:500]}
-        
-        Key info from web:
-        {chr(10).join(f"- {w.get('snippet', '')[:200]}" for w in entity.web_info[:3])}
-        
-        Be concise and informative.
-        """
-        
-        try:
-            result = await self.llm.chat_completion(
-                messages=[
-                    {"role": "system", "content": "Write concise technical summaries."},
-                    {"role": "user", "content": prompt}
-                ],
-                model=self.model,
-                temperature=0.2,
-                max_tokens=100
-            )
-            return result["content"].strip()
-        except Exception as e:
-            logger.warning(f"Summary generation failed: {e}")
-            return entity.description[:200]
-    
-    async def _extract_key_points(self, entity: EnrichedEntity) -> List[str]:
-        """Extract key points from entity info."""
-        prompt = f"""
-        Extract 3-5 key points about "{entity.name}":
-        {entity.description[:500]}
-        
-        Web info:
-        {chr(10).join(f"- {w.get('snippet', '')[:300]}" for w in entity.web_info[:5])}
-        
-        Return JSON: {{"points": ["point1", "point2", "point3"]}}
-        """
-        
-        try:
-            result = await self.llm.chat_completion(
-                messages=[
-                    {"role": "system", "content": "Extract key technical points."},
-                    {"role": "user", "content": prompt}
-                ],
-                model=self.model,
-                temperature=0.2,
-                response_format={"type": "json_object"}
-            )
-            
-            data = json.loads(result["content"])
-            return data.get("points", [])
-        except Exception as e:
-            logger.warning(f"Key points extraction failed: {e}")
-            return []
-    
+
+        return list(set(tags))
+
+    def _fallback_categorize(self, entity: EnrichedEntity) -> CategorizedItem:
+        """Return fallback categorization when LLM call fails."""
+        return CategorizedItem(
+            entity=entity,
+            primary_topic=TopicCategory.OTHER,
+            topic_confidence=0.0,
+            sub_topics=[],
+            content_type=ContentType.UNKNOWN,
+            type_confidence=0.0,
+            tags=[entity.type.value],
+            summary=entity.description[:200],
+            key_points=[],
+        )
+
     async def close(self):
         """Close the LLM client."""
         await self.llm.close()

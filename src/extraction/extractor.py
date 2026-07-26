@@ -1,6 +1,8 @@
 import asyncio
+import json
 import hashlib
 import re
+from pathlib import Path
 from typing import List, Optional, Dict, Any
 from urllib.parse import urlparse
 
@@ -28,9 +30,12 @@ class ExtractionStrategy:
     PLAYWRIGHT = "playwright"
     TRAFILATURA = "trafilatura"
     READABILITY = "readability"
+    INSTAGRAM_COOKIES = "instagram_cookies"
 
 
 class ContentExtractor:
+    COOKIES_FILE = "cookiesinsta.txt"
+
     def __init__(self):
         self.client = httpx.AsyncClient(
             timeout=httpx.Timeout(30.0),
@@ -38,6 +43,41 @@ class ContentExtractor:
             headers={"User-Agent": "Mozilla/5.0 (compatible; InstaGPT-GraphRAG/0.1)"}
         )
         self._playwright_browser = None
+        self._instagram_cookies = self._load_instagram_cookies()
+
+    def _load_instagram_cookies(self) -> List[Dict[str, Any]]:
+        """Load Instagram cookies from cookiesinsta.txt (Netscape format)."""
+        cookies_path = Path(self.COOKIES_FILE)
+        if not cookies_path.exists():
+            logger.warning(f"Cookies file not found: {self.COOKIES_FILE}")
+            return []
+
+        cookies = []
+        try:
+            content = cookies_path.read_text(encoding="utf-8")
+            for line in content.strip().split("\n"):
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                parts = line.split("\t")
+                if len(parts) >= 7:
+                    domain, _, path, secure, expires, name, value = parts[:7]
+                    cookies.append({
+                        "name": name,
+                        "value": value,
+                        "domain": domain,
+                        "path": path,
+                        "secure": secure.upper() == "TRUE",
+                        "httpOnly": False,
+                    })
+            logger.info(f"Loaded {len(cookies)} Instagram cookies")
+        except Exception as e:
+            logger.error(f"Failed to load cookies: {e}")
+        return cookies
+
+    @staticmethod
+    def _is_instagram_url(url: str) -> bool:
+        return "instagram.com" in urlparse(url).netloc
 
     async def _get_playwright_browser(self):
         if self._playwright_browser is None:
@@ -59,7 +99,23 @@ class ContentExtractor:
 
     async def extract(self, url: str) -> ExtractedContent:
         logger.info(f"Extracting content from: {url}")
-        
+
+        # Instagram requires cookies - try special extraction first
+        if self._is_instagram_url(url):
+            if self._instagram_cookies:
+                try:
+                    content = await self._extract_instagram(url)
+                    if content and len(content.raw_text) > 100:
+                        logger.success("Successfully extracted Instagram content with cookies")
+                        content.extraction_strategy = "instagram_cookies"
+                        # Post-process to filter unrelated feed content
+                        content = self._filter_instagram_feed(content, url)
+                        return content
+                except Exception as e:
+                    logger.warning(f"Instagram cookie extraction failed: {e}")
+            else:
+                logger.warning("Instagram URL detected but no cookies loaded")
+
         # Try strategies in order
         strategies = [
             (ExtractionStrategy.TRAFILATURA, self._extract_trafilatura),
@@ -227,7 +283,7 @@ class ContentExtractor:
         
         loop = asyncio.get_event_loop()
         result = await loop.run_in_executor(None, _extract_sync)
-        
+
         return ExtractedContent(
             url=result["url"],
             title=result["title"],
@@ -237,6 +293,178 @@ class ContentExtractor:
             content_length=len(result["raw_text"]),
             word_count=len(result["raw_text"].split())
         )
+
+    async def _extract_instagram(self, url: str) -> ExtractedContent:
+        """Extract Instagram content using saved cookies with Playwright."""
+
+        def _extract_sync():
+            from playwright.sync_api import sync_playwright
+
+            with sync_playwright() as p:
+                browser = p.chromium.launch(headless=settings.PLAYWRIGHT_HEADLESS)
+                context = browser.new_context(
+                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+                )
+                context.add_cookies(self._instagram_cookies)
+                page = context.new_page()
+
+                try:
+                    page.goto(url, wait_until="networkidle", timeout=60000)
+                    page.wait_for_timeout(3000)
+
+                    # Extract reel caption content
+                    content = page.evaluate("""
+                        () => {
+                            // Strategy 1: Find the reel caption via data-testid
+                            const postText = document.querySelector('[data-testid="post-text"]');
+                            if (postText && postText.innerText.trim().length > 30) {
+                                return postText.innerText.trim();
+                            }
+
+                            // Strategy 2: Find caption in the reel's article container
+                            const articles = document.querySelectorAll('article');
+                            for (const article of articles) {
+                                // Look for caption-like content (longer text blocks)
+                                const spans = article.querySelectorAll('span');
+                                for (const span of spans) {
+                                    const text = span.innerText.trim();
+                                    if (text.length > 50 && text.length < 5000) {
+                                        // Check if it looks like a caption (has hashtags or is descriptive)
+                                        if (text.includes('#') || text.split('\\n').length > 2) {
+                                            return text;
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Strategy 3: Find h1 or main heading
+                            const h1 = document.querySelector('h1');
+                            if (h1 && h1.innerText.trim().length > 20) {
+                                return h1.innerText.trim();
+                            }
+
+                            // Strategy 4: Get first meaningful text block from main content area
+                            const main = document.querySelector('main') || document.querySelector('[role="main"]');
+                            if (main) {
+                                const textBlocks = [];
+                                const walker = document.createTreeWalker(
+                                    main,
+                                    NodeFilter.SHOW_TEXT,
+                                    null,
+                                    false
+                                );
+                                let node;
+                                while (node = walker.nextNode()) {
+                                    const text = node.textContent.trim();
+                                    if (text.length > 20) {
+                                        textBlocks.push(text);
+                                        if (textBlocks.join('\\n').length > 200) {
+                                            break;
+                                        }
+                                    }
+                                }
+                                if (textBlocks.length > 0) {
+                                    return textBlocks.join('\\n');
+                                }
+                            }
+
+                            // Last resort: return empty string instead of full page
+                            return '';
+                        }
+                    """)
+
+                    title = page.title()
+
+                    # Get page URL after any redirects
+                    final_url = page.url
+
+                    if not content or len(content) < 50:
+                        raise ValueError("Insufficient content from Instagram")
+
+                    return {
+                        "url": final_url,
+                        "title": title,
+                        "raw_text": content,
+                        "markdown": content,
+                    }
+                finally:
+                    page.close()
+                    context.close()
+                    browser.close()
+
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(None, _extract_sync)
+
+        return ExtractedContent(
+            url=result["url"],
+            title=result["title"],
+            raw_text=result["raw_text"],
+            markdown=result["markdown"],
+            metadata={"extractor": "instagram_cookies"},
+            content_length=len(result["raw_text"]),
+            word_count=len(result["raw_text"].split())
+        )
+
+    def _filter_instagram_feed(self, content: ExtractedContent, url: str) -> ExtractedContent:
+        """Filter Instagram feed to extract only the target reel content."""
+        raw_text = content.raw_text
+
+        # Split by common Instagram feed separators
+        # Patterns: "username • Follow", "Likes", "Comments"
+        post_separators = [
+            r"\n(?=[a-z0-9_.]+\s*•\s*\nFollow)",  # username • Follow pattern
+            r"\n(?=\d+[,\d]*\s*\n\d+[,\d]*$)",  # Likes/Comments pattern
+        ]
+
+        posts = [raw_text]
+        for pattern in post_separators:
+            new_posts = []
+            for post in posts:
+                new_posts.extend(re.split(pattern, post, flags=re.MULTILINE))
+            posts = new_posts
+
+        # Find the target post (first post or one matching the URL)
+        target_post = None
+
+        # Strategy 1: First post is usually the target reel
+        if posts:
+            target_post = posts[0].strip()
+
+        # Strategy 2: Look for posts with substantial content (>50 words)
+        if target_post and len(target_post.split()) < 20:
+            for post in posts:
+                if len(post.split()) >= 20:
+                    target_post = post.strip()
+                    break
+
+        # Clean up the extracted content
+        if target_post:
+            # Remove "Likes" and number patterns at the end
+            target_post = re.sub(r"\nLikes\n[\d,]+\n[\d,]+$", "", target_post)
+            # Remove "Follow" button text
+            target_post = re.sub(r"\nFollow$", "", target_post)
+            # Remove excessive whitespace
+            target_post = re.sub(r"\n{3,}", "\n\n", target_post)
+
+            if len(target_post) > 50:
+                logger.info(
+                    f"Filtered Instagram feed from {len(raw_text)} to "
+                    f"{len(target_post)} chars"
+                )
+                return ExtractedContent(
+                    url=content.url,
+                    title=content.title,
+                    raw_text=target_post,
+                    markdown=target_post,
+                    metadata=content.metadata,
+                    content_length=len(target_post),
+                    word_count=len(target_post.split()),
+                    extraction_strategy=content.extraction_strategy,
+                )
+
+        # If filtering didn't help, return original
+        logger.warning("Instagram feed filtering did not improve content, returning original")
+        return content
 
     async def close(self):
         await self.client.aclose()
