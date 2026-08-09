@@ -10,7 +10,7 @@ from duckduckgo_search import DDGS
 from loguru import logger
 
 from src.config import get_settings
-from src.config.models import DocumentChunk, EnrichedEntity, EntityType
+from src.config.models import DocumentChunk, EnrichedEntity, EntityType, ExtractedRelationship
 from src.enrichment.llm_client import LLMClient
 
 settings = get_settings()
@@ -99,6 +99,11 @@ class EntityDetector:
     def _get_default_patterns(self) -> dict:
         """Return default hardcoded patterns."""
         return {
+            EntityType.TOOL: [
+                r"\b(opal|stitch|antigravity|mixboard|nano bananas|cloud code)\b",
+                r"\b(vscode|intellij|vim|neovim|cursor|windsurf|zed)\b",
+                r"\b(github copilot|claude|chatgpt|gemini)\b",
+            ],
             EntityType.FRAMEWORK: [
                 r"\b(react|vue|svelte|angular|next\.js|nuxt|astro|remix|solid|qwik)\b",
                 r"\b(django|fastapi|flask|express|nest\.js|spring|laravel|rails)\b",
@@ -115,14 +120,10 @@ class EntityDetector:
             ],
             EntityType.SERVICE: [
                 r"\b(stripe|auth0|clerk|supabase|firebase|planetscale|neon)\b",
-                r"\b(github|gitlab|bitbucket)\b",
+                # Note: github only detected when "repository" or "repo" is mentioned
             ],
             EntityType.DATABASE: [
                 r"\b(postgres|mysql|mongodb|redis|sqlite|planetscale|neon)\b",
-            ],
-            EntityType.TOOL: [
-                r"\b(vscode|intellij|vim|neovim|cursor|windsurf|zed)\b",
-                r"\b(github copilot|claude|chatgpt|gemini)\b",
             ],
             EntityType.WEB_APP: [
                 r"\b(saas|dashboard|admin panel|web app)\b",
@@ -130,9 +131,7 @@ class EntityDetector:
             EntityType.MOBILE_APP: [
                 r"\b(react native|expo|flutter|ios|android|swift|kotlin)\b",
             ],
-            EntityType.LANGUAGE: [
-                r"\b(typescript|javascript|python|rust|golang|java)\b",
-            ],
+            EntityType.LANGUAGE: [],  # Languages are too generic, skip them
             EntityType.API: [
                 r"\b(rest api|graphql|grpc|webhook)\b",
             ],
@@ -142,6 +141,38 @@ class EntityDetector:
                 r"\b(after effects|premiere pro|final cut|davinci resolve|motion)\b",
                 r"\b(photoshop|illustrator|indesign|figma|sketch|affinity)\b",
                 r"\b(d5 render|vray|corona|octane|redshift|arnold)\b",
+            ],
+            EntityType.CONCEPT: [
+                r"\b(microservices?|monolith|serverless|edge.?computing|cloud.?native)\b",
+                r"\b(ci[\s\/]?cd|continuous.?integration|continuous.?delivery|continuous.?deployment)\b",
+                r"\b(devops|gitops|infrastructure.?as.?code|platform.?engineering)\b",
+                r"\b(agile|scrum|kanban|sprint|pair.?programming|code.?review)\b",
+                r"\b(mvp|pivot|growth.?hacking|product.?market.?fit)\b",
+                r"\b(scalability|reliability|availability|observability|monitoring)\b",
+                r"\b(api.?first|contract.?first|schema.?first|design.?first)\b",
+                r"\b(real.?time|event.?driven|message.?driven|reactive)\b",
+            ],
+            EntityType.PATTERN: [
+                r"\b(design.?pattern|architectural.?pattern|creational.?pattern|structural.?pattern|behavioral.?pattern)\b",
+                r"\b(singleton|factory|observer|strategy|decorator|adapter|facade|proxy)\b",
+                r"\b(mvc|mvvm|mvp|clean.?architecture|hexagonal|onion|ports.?and.?adapters)\b",
+                r"\b(cqrs|event.?sourcing|saga|choreography|orchestration)\b",
+                r"\b(repository.?pattern|unit.?of.?work|active.?record|data.?mapper)\b",
+                r"\b(circuit.?breaker|bulkhead|retry|timeout|rate.?limiting|backpressure)\b",
+                r"\b(lazy.?loading|eager.?loading|pagination|infinite.?scroll|virtual.?scrolling)\b",
+                r"\b(throttling|debouncing|memoization|caching|invalidation)\b",
+            ],
+            EntityType.TECHNIQUE: [
+                r"\b(code.?splitting|tree.?shaking|dead.?code.?elimination|minification|bundling)\b",
+                r"\b(server.?side.?rendering|static.?site.?generation|incremental.?static.?regeneration)\b",
+                r"\b(hydration|partial.?hydration|islands.?architecture|resumability)\b",
+                r"\b(dependency.?injection|inversion.?of.?control|service.?locator)\b",
+                r"\b(test.?driven.?development|behavior.?driven.?development|property.?based.?testing)\b",
+                r"\b(mob.?programming|pair.?programming|trunk.?based.?development|feature.?flags)\b",
+                r"\b(blue.?green.?deployment|canary.?deployment|rolling.?deployment|shadow.?deployment)\b",
+                r"\b(database.?sharding|read.?replicas|connection.?pooling|query.?optimization)\b",
+                r"\b(jwt|oauth|openid.?connect|saml|sso|rbac|abac)\b",
+                r"\b(web.?component|shadow.?dom|custom.?element|slot|template)\b",
             ],
         }
 
@@ -211,9 +242,21 @@ class EntityDetector:
             "stop", "stopped", "wait", "waiting",
             "think", "thought", "feel", "felt",
             "know", "known", "say", "said",
+            # Platform names (not useful as entities)
+            "instagram", "facebook", "twitter", "youtube", "tiktok",
+            "linkedin", "reddit", "pinterest", "snapchat", "discord",
+            "medium", "dev.to", "substack", "hashnode",
+            # Common filler words from captions
+            "actually", "definitely", "really", "just", "also",
+            "need", "want", "get", "got", "have", "has",
+            # Words that create false entities
+            "open", "workforce", "website", "link",
+            "anti", "second", "hand",
+            "google", "secretly", "launched", "free", "ai", "tools",
+            "code", "editor", "cloud",
         })
 
-    def detect(self, text: str, max_entities: int = 20) -> list[dict[str, Any]]:
+    def detect(self, text: str, max_entities: int = 40) -> list[dict[str, Any]]:
         """Detect tech entities in text."""
         detected = []
         text_lower = text.lower()
@@ -226,7 +269,7 @@ class EntityDetector:
                     matched_text = match.group(0).strip()
                     if not self._is_valid(matched_text):
                         continue
-                    context = text[max(0, match.start()-100):match.end()+100]
+                    context = text[max(0, match.start()-150):match.end()+150]
                     detected.append({
                         "name": matched_text,
                         "type": entity_type,
@@ -277,6 +320,13 @@ class EntityDetector:
         """Guess entity type from name."""
         name_lower = name.lower()
 
+        tool_names = {
+            "opal", "stitch", "antigravity", "mixboard", "nano bananas", "cloud code",
+            "vscode", "intellij", "jest", "playwright",
+        }
+        if name_lower in tool_names:
+            return EntityType.TOOL
+        
         framework_names = {
             "react", "vue", "svelte", "angular", "next.js",
             "nuxt", "django", "fastapi", "express",
@@ -291,8 +341,6 @@ class EntityDetector:
             return EntityType.SERVICE
         elif name_lower in {"postgresql", "mysql", "mongodb", "redis"}:
             return EntityType.DATABASE
-        elif name_lower in {"vscode", "intellij", "jest", "playwright"}:
-            return EntityType.TOOL
         elif name_lower in {"react native", "expo", "flutter"}:
             return EntityType.MOBILE_APP
         elif name_lower in {"typescript", "python", "rust", "go"}:
@@ -303,6 +351,22 @@ class EntityDetector:
             "photoshop", "illustrator", "figma", "d5 render", "vray",
         }:
             return EntityType.CREATIVE_SOFTWARE
+        elif name_lower in {
+            "microservices", "monolith", "serverless", "ci/cd", "devops",
+            "gitops", "agile", "scrum", "kanban", "observability",
+        }:
+            return EntityType.CONCEPT
+        elif name_lower in {
+            "singleton", "factory", "observer", "strategy", "decorator",
+            "adapter", "facade", "proxy", "mvc", "mvvm", "cqrs",
+            "circuit breaker", "lazy loading", "memoization",
+        }:
+            return EntityType.PATTERN
+        elif name_lower in {
+            "code splitting", "tree shaking", "ssr", "sgg", "isr",
+            "dependency injection", "tdd", "bdd", "jwt", "oauth",
+        }:
+            return EntityType.TECHNIQUE
         return EntityType.UNKNOWN
 
 
@@ -348,8 +412,10 @@ class WebSearcher:
         results = []
 
         try:
-            ddgs_results = await asyncio.to_thread(
-                self.ddgs.text, query, max_results
+            # Run DDGS in thread with timeout
+            ddgs_results = await asyncio.wait_for(
+                asyncio.to_thread(self.ddgs.text, query, max_results),
+                timeout=15.0  # 15 second timeout
             )
 
             for r in ddgs_results:
@@ -378,6 +444,8 @@ class WebSearcher:
                     snippet=snippet,
                     source="duckduckgo"
                 ))
+        except asyncio.TimeoutError:
+            logger.warning(f"DDGS search timed out for query: {query[:50]}...")
         except Exception as e:
             logger.warning(f"DDGS search failed: {e}")
 
@@ -385,6 +453,25 @@ class WebSearcher:
 
     async def search_entity(self, entity_name: str, entity_type: EntityType) -> list[SearchResult]:
         """Search for specific entity info with disambiguated queries."""
+        # Skip search for generic concepts that don't need web search
+        # These are too broad and return irrelevant results
+        generic_concepts = {
+            "web development", "software development", "remote jobs", "freelancing",
+            "coding", "programming", "design", "marketing", "writing",
+            "ui libraries", "ui components", "animations", "frontend",
+            "backend", "full stack", "devops", "cloud computing",
+        }
+        if entity_name.lower() in generic_concepts:
+            logger.debug(f"Skipping search for generic concept: {entity_name}")
+            return []
+        
+        # Skip entities that look like transcription errors (Hindi text, too short, etc.)
+        if len(entity_name) < 3:
+            return []
+        # Skip if contains Hindi/Devanagari characters
+        if any('\u0900' <= c <= '\u097F' for c in entity_name):
+            return []
+        
         # Add disambiguation based on entity type
         type_disambiguation = {
             EntityType.FRAMEWORK: "javascript framework",
@@ -396,19 +483,136 @@ class WebSearcher:
             EntityType.LANGUAGE: "programming language",
             EntityType.MOBILE_APP: "mobile app framework",
         }
-
-        disambiguation = type_disambiguation.get(entity_type, "")
-        if disambiguation:
-            query = f'"{entity_name}" {disambiguation} features documentation'
+        
+        # Special handling for Google AI tools
+        google_tools = {
+            "opal": "Google Opal AI tool",
+            "stitch": "Google Stitch UI design tool",
+            "antigravity": "Google Antigravity code editor",
+            "mixboard": "Google Mixboard AI tool",
+            "nano bananas": "Google Nano Bananas AI tool",
+            "cloud code": "Google Cloud Code AI tool",
+        }
+        
+        entity_lower = entity_name.lower()
+        if entity_lower in google_tools:
+            query = f'{google_tools[entity_lower]} documentation'
         else:
-            query = f'"{entity_name}" features documentation'
+            disambiguation = type_disambiguation.get(entity_type, "")
+            # Simplified query to avoid timeouts
+            if disambiguation:
+                query = f'"{entity_name}" {disambiguation}'
+            else:
+                query = f'"{entity_name}" software'
 
-        return await self.search(query, max_results=8)
+        # Use fewer results and shorter timeout
+        results = await self.search(query, max_results=5)
+        # Filter out irrelevant results (e.g., motorcycle companies for "hero", news sites for "scroll")
+        return self._filter_irrelevant_results(results, entity_name)
+
+    def _filter_irrelevant_results(self, results: list, entity_name: str) -> list:
+        """Filter out search results that are clearly irrelevant to web development."""
+        # Domains that are clearly irrelevant to web development
+        irrelevant_domains = {
+            # Government/ID
+            "uidai.gov.in", "aadhaar",
+            # Motorcycles/vehicles
+            "heromotocorp.com", "hero.in", "bikewale.com", "bikedekho.com",
+            "ktmindia.com", "ktm.com", "bajaj.com", "tvs.com",
+            # News/media
+            "scroll.in", "scrolller.com", "timesofindia.com", "hindustantimes.com",
+            "ndtv.com", "news18.com", "republicworld.com",
+            # Encyclopedia
+            "wikipedia.org", "britannica.com",
+            # Ecommerce
+            "amazon.com", "flipkart.com", "ebay.com", "myntra.com", "ajio.com",
+            # Social media/messaging
+            "facebook.com", "twitter.com", "instagram.com", "whatsapp.com", "wa.me",
+            "linkedin.com", "reddit.com", "quora.com",
+            # Shopping/product reviews
+            "smartprix.com", "91mobiles.com", "gadgets360.com",
+            # Dictionary/definition sites
+            "merriam-webster.com", "dictionary.com", "cambridge.org",
+            # Generic tech news (not documentation)
+            "techcrunch.com", "theverge.com", "wired.com",
+            # Job boards (not relevant for entity info)
+            "naukri.com", "indeed.com", "glassdoor.com",
+        }
+        
+        # Keywords that indicate irrelevant content
+        irrelevant_keywords = {
+            # Vehicles
+            "motorcycle", "bike", "scooter", "vehicle", "automobile", "car",
+            "price", "mileage", "on-road", "ex-showroom", "engine",
+            # News
+            "news", "article", "blog post", "opinion", "editorial",
+            # Lifestyle
+            "recipe", "cooking", "food", "restaurant",
+            "cricket", "football", "sports", "match",
+            "movie", "film", "celebrity", "bollywood",
+            # Shopping
+            "buy", "price", "discount", "offer", "sale",
+            # Job related
+            "salary", "hiring", "job opening", "interview",
+        }
+        
+        # URL patterns to skip
+        irrelevant_url_patterns = [
+            "/dictionary/", "/definition/", "/encyclopedia/",
+            "/buy/", "/price/", "/shop/",
+            "/news/", "/sports/", "/entertainment/",
+        ]
+        
+        filtered = []
+        for r in results:
+            url_lower = r.url.lower()
+            snippet_lower = r.snippet.lower()
+            title_lower = r.title.lower()
+            
+            # Check domain
+            is_irrelevant_domain = False
+            for domain in irrelevant_domains:
+                if domain in url_lower:
+                    is_irrelevant_domain = True
+                    break
+            if is_irrelevant_domain:
+                continue
+            
+            # Check URL patterns
+            has_irrelevant_url = False
+            for pattern in irrelevant_url_patterns:
+                if pattern in url_lower:
+                    has_irrelevant_url = True
+                    break
+            if has_irrelevant_url:
+                continue
+            
+            # Check for irrelevant keywords in title/snippet
+            has_irrelevant_keyword = False
+            for keyword in irrelevant_keywords:
+                if keyword in title_lower or keyword in snippet_lower:
+                    has_irrelevant_keyword = True
+                    break
+            if has_irrelevant_keyword:
+                continue
+            
+            # Check if the result is actually about the entity in a web dev context
+            entity_lower = entity_name.lower()
+            if entity_lower in title_lower or entity_lower in snippet_lower:
+                filtered.append(r)
+            # Only keep results that mention the entity (remove the fallback)
+        
+        return filtered[:5]  # Limit to 5 relevant results
 
     async def find_alternatives(
         self, entity_name: str, entity_type: EntityType
     ) -> list[dict[str, Any]]:
         """Find similar/alternative tools."""
+        # Skip alternative search for Google AI tools (they don't have direct alternatives)
+        google_tools = {"opal", "stitch", "antigravity", "mixboard", "nano bananas", "cloud code"}
+        if entity_name.lower() in google_tools:
+            return []
+        
         query = f'"{entity_name}" alternatives competitors similar tools'
         results = await self.search(query, max_results=10)
 
@@ -488,24 +692,97 @@ class WebSearcher:
 
 
 class EnrichmentPipeline:
-    """Main enrichment pipeline combining detection and search."""
+    """Main enrichment pipeline combining detection, search, and relationship extraction."""
 
-    BATCH_SIZE = 15  # max entities per LLM batch call
+    BATCH_SIZE = 10  # max entities per LLM batch call (reduced for richer output)
 
     def __init__(self):
         self.detector = EntityDetector()
         self.searcher = WebSearcher()
         self.llm = LLMClient()
 
-    async def enrich(self, chunks: list[DocumentChunk]) -> list[EnrichedEntity]:
-        """Enrich chunks with web search results and batch LLM descriptions."""
+    async def enrich(self, chunks: list[DocumentChunk]) -> tuple[list[EnrichedEntity], list[ExtractedRelationship]]:
+        """Enrich chunks with web search results, batch LLM descriptions, and relationships."""
         entity_map = self._detect_entities(chunks)
+
+        # Always run LLM extraction to catch new/unknown entities
+        # Pattern detection only finds known entities - LLM finds everything
+        llm_entities = await self._llm_extract_entities(chunks)
+        for name, data in llm_entities.items():
+            if name.lower() not in entity_map:
+                entity_map[name.lower()] = data
+            else:
+                # Merge: keep higher confidence
+                if data.get("confidence", 0) > entity_map[name.lower()].get("confidence", 0):
+                    entity_map[name.lower()]["confidence"] = data["confidence"]
+
         if not entity_map:
-            return []
+            return [], []
 
         searched = await self._search_entities_concurrent(entity_map)
         descriptions = await self._generate_descriptions_batch(searched)
-        return self._assemble_enriched(searched, descriptions)
+        enriched = self._assemble_enriched(searched, descriptions)
+
+        # Extract relationships between entities
+        relationships = await self._extract_relationships(enriched, chunks)
+
+        # Extract step-by-step guides from video content
+        steps = await self._extract_steps(chunks)
+
+        return enriched, relationships, steps
+
+    async def _extract_steps(self, chunks: list[DocumentChunk]) -> list[str]:
+        """Extract step-by-step instructions from video transcript/OCR."""
+        # Combine all text from chunks
+        all_text = "\n\n".join(c.text for c in chunks)
+        
+        # Only extract steps if content looks like a tutorial/how-to
+        tutorial_indicators = [
+            "step", "how to", "tutorial", "guide", "instructions",
+            "first", "then", "next", "finally", "copy", "paste",
+            "click", "open", "go to", "visit"
+        ]
+        
+        has_tutorial_content = any(ind in all_text.lower() for ind in tutorial_indicators)
+        if not has_tutorial_content or len(all_text) < 100:
+            return []
+
+        try:
+            from src.enrichment.llm_client import LLMClient
+            llm = LLMClient()
+            
+            result = await llm.chat_completion(
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "Extract step-by-step instructions from this video content.\n\n"
+                            "RULES:\n"
+                            "- Only extract actionable steps (things the viewer should DO)\n"
+                            "- Keep steps concise (1-2 sentences each)\n"
+                            "- Include website/tool names exactly as mentioned\n"
+                            "- Order steps chronologically\n"
+                            "- Maximum 10 steps\n"
+                            "- If no clear steps found, return empty array\n\n"
+                            "Return a JSON object with a \"steps\" array of strings."
+                        ),
+                    },
+                    {"role": "user", "content": f"Extract steps from this content:\n\n{all_text[:3000]}"},
+                ],
+                temperature=0.1,
+                max_tokens=500,
+            )
+            
+            import json
+            data = json.loads(result["content"])
+            steps = data.get("steps", [])
+            if steps:
+                logger.info(f"Extracted {len(steps)} steps from content")
+            return steps
+            
+        except Exception as e:
+            logger.warning(f"Step extraction failed: {e}")
+            return []
 
     def _detect_entities(self, chunks):
         """Phase 1: Detect and deduplicate entities (local, no AI)."""
@@ -531,6 +808,161 @@ class EnrichmentPipeline:
                     entity_map[key]["source_text"] = det["source_text"]
         return entity_map
 
+    async def _llm_extract_entities(self, chunks: list[DocumentChunk]) -> dict:
+        """Use LLM to extract entities when pattern detection finds too few."""
+        # Prioritize chunks with video/OCR content (most relevant for Reels)
+        video_chunks = [c for c in chunks if any(marker in c.text for marker in 
+            ["[Video Content]", "[Video Frame OCR]", "[Audio Transcript]", 
+             "[English Transcript]", "[Hindi Translation]"])]
+        
+        if video_chunks:
+            # Use video chunks first, they contain the actual screen recording content
+            combined_text = "\n\n".join(c.text for c in video_chunks[:5])
+            logger.info(f"LLM entity extraction using {len(video_chunks)} video chunks")
+        else:
+            combined_text = "\n\n".join(c.text for c in chunks[:5])
+        
+        if len(combined_text.strip()) < 50:
+            return {}
+
+        prompt = (
+            "Extract ALL specific technical entities from this content. "
+            "Focus on: tool names, website names, product names, framework names, library names.\n\n"
+            "IMPORTANT:\n"
+            "- Look for proper nouns and brand names (e.g., 'Firecrawl', 'Localsend', '404 Animations')\n"
+            "- Look for website URLs or site names mentioned in screen recordings\n"
+            "- Extract the EXACT names as they appear (preserve capitalization)\n"
+            "- Do NOT extract generic terms (e.g., 'animations', 'CSS', 'websites')\n"
+            "- Do NOT include programming languages (JavaScript, Python, etc.) - too generic\n"
+            "- Do NOT include 'GitHub' unless a specific repository is mentioned\n"
+            "- Do NOT include platform names (Instagram, Facebook, YouTube)\n"
+            "- Do NOT include author/creator names\n"
+            "- Maximum 10 entities\n\n"
+            "Content:\n"
+            f"{combined_text[:3000]}\n\n"
+            "Return a JSON object with an \"entities\" array. Each entity has:\n"
+            "- \"name\": the exact entity name as written\n"
+            "- \"type\": one of [framework, library, tool, platform, service, "
+            "database, concept, web_app, mobile_app, api, unknown]\n"
+            "- \"confidence\": float 0.0-1.0\n\n"
+            "Return ONLY valid JSON."
+        )
+
+        try:
+            result = await self.llm.chat_completion(
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are a technical entity extractor. Extract "
+                            "named entities and key technical concepts from the content. "
+                            "Focus on tools, frameworks, libraries, platforms, and product names. "
+                            "You may extract general category terms like 'UI libraries' if they "
+                            "are the main subject. Do NOT extract feature descriptions like "
+                            "'hero sections' or 'scroll effects'. Maximum 5. Return valid JSON."
+                        ),
+                    },
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0.1,
+                max_tokens=800,
+                response_format={"type": "json_object"},
+            )
+
+            content = result["content"].strip()
+
+            # Parse JSON
+            json_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", content, re.DOTALL)
+            if json_match:
+                content = json_match.group(1)
+            elif not content.startswith("{"):
+                brace_start = content.find("{")
+                brace_end = content.rfind("}")
+                if brace_start != -1 and brace_end != -1:
+                    content = content[brace_start:brace_end + 1]
+
+            data = json.loads(content)
+            raw_entities = data.get("entities", [])
+
+            # Convert to entity_map format with deduplication
+            entity_map = {}
+            for ent in raw_entities:
+                name = ent.get("name", "").strip()
+                if not name or len(name) < 2:
+                    continue
+
+                # Skip platform names
+                name_lower = name.lower()
+                if name_lower in {"instagram", "facebook", "twitter", "youtube",
+                                   "tiktok", "linkedin", "reddit", ".app"}:
+                    continue
+
+                # Skip numeric facts (e.g., "48 chimneys", "35% less energy", "250+ animated components")
+                if re.match(r'^[\d]+[%+]?\s+\w', name):
+                    continue
+                # Skip names that are just quantities or descriptions, not entities
+                if re.match(r'^\d+\+?\s+(animated|free|best|top|new|all|more|less|best)', name, re.IGNORECASE):
+                    continue
+
+                # Skip generic UI/web terms that are features, not named entities
+                generic_ui_terms = {
+                    "hero sections", "hero section", "scroll effects", "scroll effect",
+                    "landing pages", "landing page", "modern design blocks", "design blocks",
+                    "animated components", "animations", "ui components", "web components",
+                    "responsive design", "mobile first", "dark mode", "light mode",
+                    "parallax", "fade in", "fade out", "slide in", "slide out",
+                    "carousel", "slider", "modal", "popup", "tooltip", "dropdown",
+                    "navigation", "header", "footer", "sidebar", "menu",
+                    "button", "form", "input", "checkbox", "radio", "toggle",
+                    "card", "grid", "flex", "layout", "container", "wrapper",
+                    "typography", "font", "color", "gradient", "shadow",
+                    "border", "radius", "padding", "margin", "spacing",
+                    "animation", "transition", "transform", "keyframe",
+                    "css", "html", "javascript", "typescript", "react", "vue", "angular",
+                }
+                if name_lower in generic_ui_terms:
+                    continue
+                # Skip multi-word phrases that are just feature descriptions
+                if len(name.split()) > 3:
+                    continue
+
+                # Skip if similar to existing entity
+                skip = False
+                for existing_name in entity_map:
+                    # Simple similarity: if one name contains the other
+                    if name_lower in existing_name or existing_name in name_lower:
+                        skip = True
+                        break
+                if skip:
+                    continue
+
+                type_str = ent.get("type", "unknown")
+                try:
+                    entity_type = EntityType(type_str)
+                except ValueError:
+                    entity_type = EntityType.UNKNOWN
+
+                entity_map[name_lower] = {
+                    "name": name,
+                    "type": entity_type,
+                    "context": combined_text[:300],
+                    "confidence": float(ent.get("confidence", 0.7)),
+                    "source_chunk_id": chunks[0].id if chunks else "",
+                    "source_text": combined_text,
+                    "source_chunks": [chunks[0].id] if chunks else [],
+                }
+
+                # Limit to 8 entities
+                if len(entity_map) >= 8:
+                    break
+
+            logger.info(f"LLM extracted {len(entity_map)} entities")
+            return entity_map
+
+        except Exception as e:
+            logger.warning(f"LLM entity extraction failed: {e}")
+            return {}
+
     async def _search_entities_concurrent(self, entity_map):
         """Phase 2: Concurrent web search per entity."""
         semaphore = asyncio.Semaphore(5)
@@ -543,13 +975,11 @@ class EnrichmentPipeline:
                     search_results = await self.searcher.search_entity(
                         name, entity_type
                     )
-                    alternatives = await self.searcher.find_alternatives(
-                        name, entity_type
-                    )
+                    # Skip alternatives search - not needed for output
                     return {
                         **entity_data,
                         "search_results": search_results,
-                        "alternatives": alternatives,
+                        "alternatives": [],
                     }
                 except Exception as e:
                     logger.warning(f"Web search failed for {name}: {e}")
@@ -580,15 +1010,52 @@ class EnrichmentPipeline:
             alternatives = entity_data.get("alternatives", [])
             source_chunk_id = entity_data["source_chunks"][0]
 
-            web_info = [
-                {
+            # Filter web_info to only include relevant references
+            web_info = []
+            for r in search_results:
+                # Skip references from irrelevant domains
+                url_lower = r.url.lower()
+                title_lower = r.title.lower()
+                
+                # Domains to skip in references
+                skip_domains = {
+                    "whatsapp.com", "wa.me", "facebook.com", "twitter.com",
+                    "instagram.com", "linkedin.com", "reddit.com", "quora.com",
+                    "myntra.com", "ajio.com", "amazon.com", "flipkart.com",
+                    "merriam-webster.com", "dictionary.com", "cambridge.org",
+                    "wikipedia.org", "britannica.com",
+                    "naukri.com", "indeed.com", "glassdoor.com",
+                    "timesofindia.com", "hindustantimes.com", "ndtv.com",
+                }
+                
+                is_skip_domain = False
+                for domain in skip_domains:
+                    if domain in url_lower:
+                        is_skip_domain = True
+                        break
+                if is_skip_domain:
+                    continue
+                
+                # Skip if title is too generic or irrelevant
+                skip_title_patterns = [
+                    "sign in", "log in", "login", "register",
+                    "privacy policy", "terms of service",
+                    "cookie", "advertisement",
+                ]
+                is_skip_title = False
+                for pattern in skip_title_patterns:
+                    if pattern in title_lower:
+                        is_skip_title = True
+                        break
+                if is_skip_title:
+                    continue
+                
+                web_info.append({
                     "title": r.title,
                     "url": r.url,
                     "snippet": r.snippet,
                     "source": r.source,
-                }
-                for r in search_results
-            ]
+                })
 
             similar_tools = [
                 {
@@ -634,15 +1101,15 @@ class EnrichmentPipeline:
         for e in batch:
             search_results = e.get("search_results", [])
             search_ctx = "\n".join(
-                f"  - {r.title}: {r.snippet[:200]}" for r in search_results[:3]
+                f"  - {r.title}: {r.snippet[:300]}" for r in search_results[:4]
             )
             # Use full source text for context, not just the match window
-            source_text = e.get("source_text", "")[:1000]
+            source_text = e.get("source_text", "")[:1500]
             entity_summaries.append(
                 f"Name: {e['name']}\n"
                 f"Type: {e['type']}\n"
-                f"Source Content (full transcript):\n{source_text}\n"
-                f"Web:\n{search_ctx}"
+                f"Source Content:\n{source_text}\n"
+                f"Web Search Results:\n{search_ctx}"
             )
 
         entities_text = "\n\n".join(
@@ -650,19 +1117,24 @@ class EnrichmentPipeline:
         )
 
         prompt = (
-            "Summarize what the SOURCE CONTENT says about each entity. "
-            "Include specific steps, actions, and instructions mentioned.\n\n"
-            "For example, if the source says 'select X then press Y', "
-            "your summary should include those exact steps.\n\n"
-            "Do NOT generate generic descriptions. Do NOT add external knowledge. "
-            "Use ONLY information from the source.\n\n"
+            "For each entity below, write a comprehensive description that:\n"
+            "1. Starts with WHAT the entity IS (its core purpose and category)\n"
+            "2. Explains WHY it matters or WHEN to use it (use cases, benefits)\n"
+            "3. Describes HOW it works or its key features (from source + web info)\n"
+            "4. Mentions its ecosystem position (what it replaces, what works with it)\n\n"
+            "Use the source content as primary context. Supplement with web search results "
+            "to fill gaps the source doesn't cover. Write naturally, not as bullet points.\n\n"
             f"Return a JSON object with a \"descriptions\" array containing "
             f"exactly {len(batch)} strings, in the same order as the entities.\n\n"
             f"Example:\n"
             f'Entity: React\n'
             f'Source: "Use React hooks to manage state with useState"\n'
-            f'Description: "Shows how to use React hooks for state management '
-            f'using the useState function."\n\n'
+            f'Web: "React is a JavaScript library for building user interfaces"\n'
+            f'Description: "React is a JavaScript library for building user interfaces, '
+            f'created by Meta. It uses a component-based architecture where UI is composed '
+            f'of reusable components. The source demonstrates using React hooks like useState '
+            f'for state management within components. React supports server-side rendering '
+            f'via frameworks like Next.js and uses a virtual DOM for efficient updates."\n\n'
             f"Entities:\n{entities_text}\n\n"
             "Return ONLY valid JSON."
         )
@@ -673,19 +1145,18 @@ class EnrichmentPipeline:
                     {
                         "role": "system",
                         "content": (
-                            "You are a content summarizer. Extract and summarize "
-                            "information FROM THE SOURCE ONLY. Include specific "
-                            "steps, actions, and instructions. If the source says "
-                            "'select X, then press Y', include that. Do NOT add "
-                            "external knowledge. Return valid JSON with a "
-                            "\"descriptions\" array."
+                            "You are a technical knowledge graph builder. For each entity, "
+                            "write a rich, informative description that captures its essence, "
+                            "purpose, key features, and ecosystem position. Combine information "
+                            "from the source content and web search results. Be specific and "
+                            "concrete — avoid vague or generic statements. Write 3-5 sentences "
+                            "per entity. Return valid JSON with a \"descriptions\" array."
                         ),
                     },
                     {"role": "user", "content": prompt},
                 ],
-                model=settings.OPENAI_CHAT_MODEL,
-                temperature=0.2,
-                max_tokens=200 * len(batch),
+                temperature=0.3,
+                max_tokens=600 * len(batch),
                 response_format={"type": "json_object"},
             )
 
@@ -705,6 +1176,16 @@ class EnrichmentPipeline:
             data = json.loads(content)
             descriptions = data.get("descriptions", [])
 
+            # Handle Ollama returning dicts instead of strings
+            normalized = []
+            for d in descriptions:
+                if isinstance(d, dict):
+                    # Extract the description text from dict
+                    normalized.append(d.get("description", d.get("summary", str(d))))
+                else:
+                    normalized.append(str(d))
+            descriptions = normalized
+
             # Validate count matches batch
             if len(descriptions) == len(batch):
                 return descriptions
@@ -723,10 +1204,148 @@ class EnrichmentPipeline:
 
         except Exception as e:
             logger.warning(f"Batch description LLM call failed: {e}")
+            # Try to extract partial JSON before giving up
+            try:
+                import re as re_module
+                raw = re_module.search(r'```json\s*\n(.*?)$', response_text, re_module.DOTALL)
+                if raw:
+                    descs = re_module.findall(r'"description"\s*:\s*"([^"]*)"', raw.group(1))
+                    if descs:
+                        logger.info(f"Recovered {len(descs)} descriptions from partial JSON")
+                        while len(descs) < len(batch):
+                            idx = len(descs)
+                            descs.append(
+                                f"{batch[idx]['name']} is a "
+                                f"{batch[idx]['type']} in the source content."
+                            )
+                        return descs[:len(batch)]
+            except Exception:
+                pass
             return [
                 f"{e['name']} is a {e['type']} mentioned in the source content."
                 for e in batch
             ]
+
+    async def _extract_relationships(
+        self, entities: list[EnrichedEntity], chunks: list[DocumentChunk]
+    ) -> list[ExtractedRelationship]:
+        """Extract relationships between entities using LLM."""
+        if len(entities) < 2:
+            return []
+
+        all_relationships = []
+
+        # Process in batches of 20 entities at a time
+        batch_size = 20
+        for batch_start in range(0, len(entities), batch_size):
+            batch = entities[batch_start:batch_start + batch_size]
+            batch_rels = await self._llm_extract_relationships(batch, chunks)
+            all_relationships.extend(batch_rels)
+
+        return all_relationships
+
+    async def _llm_extract_relationships(
+        self, entities: list[EnrichedEntity], chunks: list[DocumentChunk]
+    ) -> list[ExtractedRelationship]:
+        """Single LLM call to extract relationships between entities."""
+        # Build entity list with context
+        entity_list = "\n".join(
+            f"- {e.name} ({e.type.value}): {e.description[:200]}"
+            for e in entities
+        )
+
+        # Combine source texts for context
+        source_texts = "\n\n".join(
+            f"[Chunk {i+1}]: {c.text[:500]}"
+            for i, c in enumerate(chunks[:5])
+        )
+
+        prompt = (
+            "Given these entities from the same content, extract ALL meaningful "
+            "relationships between them. Relationship types to consider:\n\n"
+            "- USES: A uses B (e.g., 'React uses JSX', 'Docker uses Kubernetes')\n"
+            "- DEPENDS_ON: A depends on B (e.g., 'App depends on Database')\n"
+            "- IMPLEMENTS: A implements B (e.g., 'Express implements HTTP server')\n"
+            "- REPLACES: A replaces B (e.g., 'Vercel replaces Heroku')\n"
+            "- INTEGRATES_WITH: A integrates with B (e.g., 'Stripe integrates with React')\n"
+            "- PART_OF: A is part of B (e.g., 'React hooks are part of React')\n"
+            "- ALTERNATIVE_TO: A is an alternative to B (e.g., 'Vue is alternative to React')\n"
+            "- ENABLES: A enables B (e.g., 'Docker enables containerization')\n"
+            "- EVOLVED_FROM: A evolved from B (e.g., 'Next.js evolved from Create React App')\n"
+            "- COMPLEMENTS: A complements B (e.g., 'TypeScript complements JavaScript')\n\n"
+            f"Entities:\n{entity_list}\n\n"
+            f"Source Content:\n{source_texts}\n\n"
+            f"Return a JSON object with a \"relationships\" array. Each relationship has:\n"
+            f"- \"source\": name of entity A\n"
+            f"- \"target\": name of entity B\n"
+            f"- \"relation_type\": one of the types above\n"
+            f"- \"description\": brief explanation of the relationship\n"
+            f"- \"confidence\": float 0.0-1.0\n\n"
+            f"Only include relationships you are confident about. "
+            f"Return ONLY valid JSON."
+        )
+
+        try:
+            result = await self.llm.chat_completion(
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are a technical knowledge graph builder specializing in "
+                            "software engineering relationships. Extract precise, factual "
+                            "relationships between entities. Focus on USES, DEPENDS_ON, "
+                            "IMPLEMENTS, INTEGRATES_WITH, and ALTERNATIVE_TO relationships. "
+                            "Only include relationships you are confident about from the "
+                            "context. Return valid JSON."
+                        ),
+                    },
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0.1,
+                max_tokens=2000,
+                response_format={"type": "json_object"},
+            )
+
+            content = result["content"].strip()
+
+            # Parse JSON
+            json_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", content, re.DOTALL)
+            if json_match:
+                content = json_match.group(1)
+            elif not content.startswith("{"):
+                brace_start = content.find("{")
+                brace_end = content.rfind("}")
+                if brace_start != -1 and brace_end != -1:
+                    content = content[brace_start:brace_end + 1]
+
+            data = json.loads(content)
+            raw_rels = data.get("relationships", [])
+
+            # Validate and convert
+            entity_names = {e.name.lower() for e in entities}
+            relationships = []
+            for rel in raw_rels:
+                source = rel.get("source", "").strip()
+                target = rel.get("target", "").strip()
+                rel_type = rel.get("relation_type", "").strip().upper()
+
+                # Validate names exist in our entity set
+                if (source.lower() in entity_names and
+                    target.lower() in entity_names and
+                    source.lower() != target.lower()):
+                    relationships.append(ExtractedRelationship(
+                        source=source,
+                        target=target,
+                        relation_type=rel_type,
+                        description=rel.get("description", ""),
+                        confidence=float(rel.get("confidence", 0.7)),
+                    ))
+
+            return relationships
+
+        except Exception as e:
+            logger.warning(f"Relationship extraction failed: {e}")
+            return []
 
     async def close(self):
         await self.searcher.close()

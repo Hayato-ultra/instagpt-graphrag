@@ -9,7 +9,7 @@ import networkx as nx
 from openai import AsyncOpenAI
 
 from src.config import get_settings
-from src.config.models import CategorizedItem, EnrichedEntity, EntityType, ContentType
+from src.config.models import CategorizedItem, EnrichedEntity, EntityType, ContentType, ExtractedRelationship
 from src.vector import VectorStore
 from loguru import logger
 
@@ -52,7 +52,11 @@ class GraphStore:
     def set_embedder(self, embedder):
         self.embedder = embedder
 
-    async def upsert_knowledge(self, items: List[CategorizedItem]) -> MergeResult:
+    async def upsert_knowledge(
+        self,
+        items: List[CategorizedItem],
+        relationships: List[ExtractedRelationship] = None,
+    ) -> MergeResult:
         """Upsert categorized items into the neural graph."""
         result = MergeResult()
         
@@ -66,6 +70,19 @@ class GraphStore:
                 error_msg = f"Failed to upsert {item.entity.name}: {e}"
                 logger.error(error_msg)
                 result.errors.append(error_msg)
+        
+        # Create relationship edges
+        if relationships:
+            for rel in relationships:
+                try:
+                    self._create_relationship_edge(rel)
+                    result.merged_edges += 1
+                except Exception as e:
+                    logger.warning(f"Failed to create relationship {rel.source}->{rel.target}: {e}")
+        
+        # Create co-occurrence edges
+        co_occur_edges = self._create_cooccurrence_edges(items)
+        result.merged_edges += co_occur_edges
         
         logger.info(f"Graph update complete: {result.new_nodes} new, {result.updated_nodes} updated, {result.merged_edges} edges")
         return result
@@ -296,6 +313,65 @@ class GraphStore:
             weight=weight,
             created_at=datetime.utcnow().isoformat()
         )
+    
+    def _create_relationship_edge(self, rel: ExtractedRelationship):
+        """Create a typed relationship edge between two entities."""
+        # Find entity nodes by name
+        node1_id = None
+        node2_id = None
+        
+        for node_id, data in self.graph.nodes(data=True):
+            if data.get("name", "").lower() == rel.source.lower() and data.get("node_type") == "entity":
+                node1_id = node_id
+            elif data.get("name", "").lower() == rel.target.lower() and data.get("node_type") == "entity":
+                node2_id = node_id
+        
+        if node1_id and node2_id:
+            self.graph.add_edge(
+                node1_id, node2_id,
+                relation=rel.relation_type.upper(),
+                description=rel.description,
+                confidence=rel.confidence,
+                created_at=datetime.utcnow().isoformat()
+            )
+    
+    def _create_cooccurrence_edges(self, items: List[CategorizedItem]) -> int:
+        """Create CO_OCCURS_WITH edges for entities mentioned in the same chunk."""
+        chunk_entities = {}
+        for item in items:
+            chunk_id = item.entity.source_chunk_id
+            if chunk_id not in chunk_entities:
+                chunk_entities[chunk_id] = []
+            chunk_entities[chunk_id].append(item.entity.name)
+        
+        edge_count = 0
+        for chunk_id, entity_names in chunk_entities.items():
+            if len(entity_names) < 2:
+                continue
+            
+            # Find node IDs for these entities
+            node_ids = {}
+            for name in entity_names:
+                for node_id, data in self.graph.nodes(data=True):
+                    if data.get("name", "").lower() == name.lower() and data.get("node_type") == "entity":
+                        node_ids[name] = node_id
+                        break
+            
+            # Create edges between all pairs
+            for i in range(len(entity_names)):
+                for j in range(i + 1, len(entity_names)):
+                    n1 = node_ids.get(entity_names[i])
+                    n2 = node_ids.get(entity_names[j])
+                    if n1 and n2:
+                        self.graph.add_edge(
+                            n1, n2,
+                            relation="CO_OCCURS_WITH",
+                            source_chunk_id=chunk_id,
+                            created_at=datetime.utcnow().isoformat()
+                        )
+                        edge_count += 1
+        
+        return edge_count
 
     async def _ensure_topic_hierarchy(self, item: CategorizedItem):
         """Ensure topic and subtopic nodes exist and are connected."""

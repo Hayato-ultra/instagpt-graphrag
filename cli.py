@@ -15,7 +15,7 @@ from loguru import logger
 
 from src.config import get_settings
 from src.pipeline import KnowledgeGraphPipeline as Pipeline
-from src.graph import GraphStore
+from src.graph import Neo4jGraphStore, create_graph_store
 
 app = typer.Typer(
     name="instagpt-graphrag",
@@ -67,124 +67,103 @@ def process(
 @app.command()
 def graph(
     stats: bool = typer.Option(True, "--stats/--no-stats", help="Show graph statistics"),
-    export: str = typer.Option(None, "--export", "-e", help="Export graph (graphml, gexf, json)"),
+    export: str = typer.Option(None, "--export", "-e", help="Export graph (cypher, json)"),
 ):
-    """View or export the knowledge graph."""
+    """View or export the knowledge graph via Neo4j."""
     
-    graph_store = GraphStore()
+    async def _graph():
+        graph_store = await create_graph_store()
+        try:
+            if stats:
+                stats_data = await graph_store.get_stats()
+                _display_graph_stats(stats_data)
+            
+            if export:
+                format = export.lower()
+                if format not in ["cypher", "json"]:
+                    console.print(f"[red]Invalid format: {format}. Use cypher or json[/red]")
+                    return
+                
+                filepath = await graph_store.export_graph(format)
+                console.print(f"[green]Graph exported to: {filepath}[/green]")
+        finally:
+            await graph_store.close()
     
-    if stats:
-        stats_data = graph_store.get_stats()
-        _display_graph_stats(stats_data)
-    
-    if export:
-        format = export.lower()
-        if format not in ["graphml", "gexf", "json"]:
-            console.print(f"[red]Invalid format: {format}. Use graphml, gexf, or json[/red]")
-            return
-        
-        filepath = graph_store.export_graph(format)
-        console.print(f"[green]Graph exported to: {filepath}[/green]")
+    asyncio.run(_graph())
 
 
 @app.command()
 def search(
     query: str = typer.Argument(..., help="Search query"),
     limit: int = typer.Option(10, "--limit", "-l", help="Max results"),
-    topic: str = typer.Option(None, "--topic", "-t", help="Filter by topic"),
 ):
-    """Search the knowledge graph."""
+    """Search the knowledge graph via Neo4j full-text search."""
     
-    graph_store = GraphStore()
-    
-    # Simple text search in graph
-    results = []
-    query_lower = query.lower()
-    
-    for node_id, data in graph_store.graph.nodes(data=True):
-        if data.get("node_type") == "entity":
-            name = data.get("name", "").lower()
-            description = data.get("description", "").lower()
-            tags = " ".join(data.get("tags", [])).lower()
+    async def _search():
+        graph_store = await create_graph_store()
+        try:
+            results = await graph_store.search_entities(query, limit=limit)
             
-            if query_lower in name or query_lower in description or query_lower in tags:
-                if topic is None or data.get("topic") == topic:
-                    results.append({
-                        "id": node_id,
-                        "name": data.get("name"),
-                        "type": data.get("type"),
-                        "topic": data.get("topic"),
-                        "description": data.get("description", "")[:200],
-                        "tags": data.get("tags", [])[:5]
-                    })
+            if not results:
+                console.print("[yellow]No results found[/yellow]")
+                return
+            
+            table = Table(title=f"Search Results for '{query}'")
+            table.add_column("Name", style="cyan")
+            table.add_column("Type", style="magenta")
+            table.add_column("Description", style="white")
+            
+            for r in results:
+                table.add_row(
+                    r.get("name", "N/A"),
+                    r.get("type", "N/A"),
+                    (r.get("description", "") or "")[:200],
+                )
+            
+            console.print(table)
+        finally:
+            await graph_store.close()
     
-    results = results[:limit]
-    
-    if not results:
-        console.print("[yellow]No results found[/yellow]")
-        return
-    
-    table = Table(title=f"Search Results for '{query}'")
-    table.add_column("Name", style="cyan")
-    table.add_column("Type", style="magenta")
-    table.add_column("Topic", style="green")
-    table.add_column("Description", style="white")
-    table.add_column("Tags", style="dim")
-    
-    for r in results:
-        table.add_row(
-            r["name"],
-            r["type"],
-            r["topic"] or "N/A",
-            r["description"],
-            ", ".join(r["tags"])
-        )
-    
-    console.print(table)
+    asyncio.run(_search())
 
 
 @app.command()
 def entity(
     name: str = typer.Argument(..., help="Entity name to look up"),
 ):
-    """Get detailed info about an entity."""
+    """Get detailed info about an entity from Neo4j."""
     
-    graph_store = GraphStore()
-    entity = graph_store.get_entity(name)
+    async def _entity():
+        graph_store = await create_graph_store()
+        try:
+            entity = await graph_store.get_entity(name)
+            
+            if not entity:
+                console.print(f"[red]Entity '{name}' not found[/red]")
+                return
+            
+            console.print(f"[bold cyan]{entity.get('name', 'N/A')}[/bold cyan] ({entity.get('type', 'N/A')})")
+            console.print(f"Topic: [green]{entity.get('topic', 'N/A')}[/green]")
+            console.print(f"Sub-topic: [green]{entity.get('sub_topic', 'N/A')}[/green]")
+            console.print(f"Content Type: [yellow]{entity.get('content_type', 'N/A')}[/yellow]")
+            console.print(f"Version: {entity.get('version', 1)}")
+            console.print(f"Confidence: {entity.get('confidence', 0):.0%}")
+            console.print()
+            console.print("[bold]Description:[/bold]")
+            console.print(entity.get("description", "N/A"))
+            console.print()
+            
+            # Related entities
+            related = await graph_store.get_related(name, limit=10)
+            if related:
+                console.print("[bold]Related:[/bold]")
+                for rel in related:
+                    node = rel.get("node", {})
+                    console.print(f"  [{rel.get('relation', 'N/A')}] {node.get('name', 'N/A')} ({node.get('type', 'N/A')})")
+        finally:
+            await graph_store.close()
     
-    if not entity:
-        console.print(f"[red]Entity '{name}' not found[/red]")
-        return
-    
-    console.print(f"[bold cyan]{entity['name']}[/bold cyan] ({entity['type']})")
-    console.print(f"Topic: [green]{entity.get('topic', 'N/A')}[/green]")
-    console.print(f"Sub-topic: [green]{entity.get('sub_topic', 'N/A')}[/green]")
-    console.print(f"Content Type: [yellow]{entity.get('content_type', 'N/A')}[/yellow]")
-    console.print(f"Version: {entity.get('version', 1)}")
-    console.print(f"Confidence: {entity.get('confidence', 0):.0%}")
-    console.print()
-    console.print("[bold]Description:[/bold]")
-    console.print(entity.get("description", "N/A"))
-    console.print()
-    
-    if entity.get("key_points"):
-        console.print("[bold]Key Points:[/bold]")
-        for pt in entity["key_points"]:
-            console.print(f"  • {pt}")
-        console.print()
-    
-    if entity.get("similar_tools"):
-        console.print("[bold]Similar Tools:[/bold]")
-        for tool in entity["similar_tools"][:5]:
-            console.print(f"  • {tool.get('name')}: {tool.get('description', '')[:100]}")
-        console.print()
-    
-    # Related entities
-    related = graph_store.get_related(name, limit=10)
-    if related:
-        console.print("[bold]Related:[/bold]")
-        for rel in related:
-            console.print(f"  [{rel['relation']}] {rel.get('name', 'N/A')} ({rel.get('type', 'N/A')})")
+    asyncio.run(_entity())
 
 
 def _display_result(result):
@@ -218,9 +197,9 @@ def _display_batch_results(results):
         table.add_row(
             r.url[:60] + "..." if len(r.url) > 60 else r.url,
             status,
-            str(len(r.entities)),
-            str(len(r.categorized_items)),
-            str(r.processing_time_ms)
+            str(len(r.entities)) if r.processing_result else "0",
+            str(len(r.categorized_items)) if r.processing_result else "0",
+            str(r.processing_result.processing_time_ms) if r.processing_result else "0"
         )
     
     console.print(table)
@@ -232,19 +211,21 @@ def _display_batch_results(results):
 def _display_graph_stats(stats):
     """Display graph statistics."""
     console.print("\n[bold]Knowledge Graph Statistics[/bold]")
-    console.print(f"  Total Nodes: {stats['total_nodes']}")
-    console.print(f"  Total Edges: {stats['total_edges']}")
-    console.print(f"  Density: {stats['density']:.4f}")
-    console.print()
     
+    for stat in stats.get("total_nodes", []):
+        console.print(f"  Total Nodes: {stat.get('count', 0)}")
+    for stat in stats.get("total_edges", []):
+        console.print(f"  Total Edges: {stat.get('count', 0)}")
+    
+    console.print()
     console.print("[bold]Node Types:[/bold]")
-    for ntype, count in stats['node_types'].items():
-        console.print(f"  {ntype}: {count}")
+    for stat in stats.get("node_types", []):
+        console.print(f"  {stat.get('type', 'N/A')}: {stat.get('count', 0)}")
     
     console.print()
     console.print("[bold]Edge Types:[/bold]")
-    for etype, count in stats['edge_types'].items():
-        console.print(f"  {etype}: {count}")
+    for stat in stats.get("edge_types", []):
+        console.print(f"  {stat.get('type', 'N/A')}: {stat.get('count', 0)}")
 
 
 @app.command()
@@ -259,7 +240,7 @@ def config():
     for field_name in dir(s):
         if not field_name.startswith("_"):
             value = getattr(s, field_name)
-            if "KEY" in field_name or "SECRET" in field_name:
+            if "KEY" in field_name or "SECRET" in field_name or "PASSWORD" in field_name:
                 value = "***" if value else "NOT SET"
             table.add_row(field_name, str(value))
     

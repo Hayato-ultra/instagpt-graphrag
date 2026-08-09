@@ -10,8 +10,9 @@ from neo4j import AsyncGraphDatabase, AsyncDriver
 from openai import AsyncOpenAI
 
 from src.config import get_settings
-from src.config.models import CategorizedItem, EnrichedEntity, EntityType, ContentType
+from src.config.models import CategorizedItem, EnrichedEntity, EntityType, ContentType, ExtractedRelationship
 from src.vector import VectorStore
+from src.enrichment.llm_client import LLMClient
 from loguru import logger
 
 
@@ -37,7 +38,7 @@ class Neo4jGraphStore:
         self.driver: Optional[AsyncDriver] = None
         self.vector_store = VectorStore()
         self.embedder = None  # Set by pipeline
-        self.llm_client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+        self.llm_client = LLMClient()  # Use unified LLM client with Ollama support
         
         # Similarity thresholds
         self.SAME_ENTITY_THRESHOLD = 0.92
@@ -106,8 +107,12 @@ class Neo4jGraphStore:
     def set_embedder(self, embedder):
         self.embedder = embedder
     
-    async def upsert_knowledge(self, items: List[CategorizedItem]) -> MergeResult:
-        """Upsert categorized items into Neo4j."""
+    async def upsert_knowledge(
+        self,
+        items: List[CategorizedItem],
+        relationships: List[ExtractedRelationship] = None,
+    ) -> MergeResult:
+        """Upsert categorized items and relationships into Neo4j."""
         result = MergeResult()
         
         async with self.driver.session() as session:
@@ -121,6 +126,19 @@ class Neo4jGraphStore:
                     error_msg = f"Failed to upsert {item.entity.name}: {e}"
                     logger.error(error_msg)
                     result.errors.append(error_msg)
+            
+            # Create relationship edges
+            if relationships:
+                for rel in relationships:
+                    try:
+                        await self._create_relationship_edge(session, rel)
+                        result.merged_edges += 1
+                    except Exception as e:
+                        logger.warning(f"Failed to create relationship {rel.source}->{rel.target}: {e}")
+            
+            # Create co-occurrence edges for entities in same chunk
+            co_occur_edges = await self._create_cooccurrence_edges(session, items)
+            result.merged_edges += co_occur_edges
         
         logger.info(f"Graph update complete: {result.new_nodes} new, {result.updated_nodes} updated, {result.merged_edges} edges")
         return result
@@ -231,7 +249,7 @@ class Neo4jGraphStore:
                e.description as description, t.name as topic, s.name as sub_topic
         LIMIT 1
         """
-        record = await session.run(query, name=name).single()
+        record = await (await session.run(query, name=name)).single()
         return dict(record) if record else None
     
     async def _create_entity_node(self, session, item: CategorizedItem, embedding: List[float]) -> str:
@@ -429,6 +447,77 @@ class Neo4jGraphStore:
         """
         await session.run(query, node1=node1, node2=node2, weight=weight, created_at=datetime.utcnow().isoformat())
     
+    async def _create_relationship_edge(self, session, rel: ExtractedRelationship):
+        """Create a typed relationship edge between two entities."""
+        # Map relation_type to a valid Cypher relationship type
+        rel_type_map = {
+            "USES": "USES",
+            "DEPENDS_ON": "DEPENDS_ON",
+            "IMPLEMENTS": "IMPLEMENTS",
+            "REPLACES": "REPLACES",
+            "INTEGRATES_WITH": "INTEGRATES_WITH",
+            "PART_OF": "PART_OF",
+            "ALTERNATIVE_TO": "ALTERNATIVE_TO",
+            "ENABLES": "ENABLES",
+            "EVOLVED_FROM": "EVOLVED_FROM",
+            "COMPLEMENTS": "COMPLEMENTS",
+        }
+        rel_type = rel_type_map.get(rel.relation_type.upper(), "RELATED_TO")
+        
+        query = f"""
+        MATCH (e1:Entity {{name: $source}})
+        MATCH (e2:Entity {{name: $target}})
+        MERGE (e1)-[r:{rel_type}]->(e2)
+        SET r.description = $description,
+            r.confidence = $confidence,
+            r.created_at = $created_at
+        """
+        await session.run(
+            query,
+            source=rel.source,
+            target=rel.target,
+            description=rel.description,
+            confidence=rel.confidence,
+            created_at=datetime.utcnow().isoformat(),
+        )
+    
+    async def _create_cooccurrence_edges(self, session, items: List[CategorizedItem]) -> int:
+        """Create CO_OCCURS_WITH edges for entities mentioned in the same chunk."""
+        # Group entities by source chunk
+        chunk_entities = {}
+        for item in items:
+            chunk_id = item.entity.source_chunk_id
+            if chunk_id not in chunk_entities:
+                chunk_entities[chunk_id] = []
+            chunk_entities[chunk_id].append(item.entity.name)
+        
+        edge_count = 0
+        for chunk_id, entity_names in chunk_entities.items():
+            if len(entity_names) < 2:
+                continue
+            
+            # Create edges between all pairs in the same chunk
+            for i in range(len(entity_names)):
+                for j in range(i + 1, len(entity_names)):
+                    query = """
+                    MATCH (e1:Entity {name: $name1})
+                    MATCH (e2:Entity {name: $name2})
+                    MERGE (e1)-[r:CO_OCCURS_WITH]-(e2)
+                    SET r.source_chunk_id = $chunk_id,
+                        r.occurrence_count = COALESCE(r.occurrence_count, 0) + 1,
+                        r.updated_at = $updated_at
+                    """
+                    await session.run(
+                        query,
+                        name1=entity_names[i],
+                        name2=entity_names[j],
+                        chunk_id=chunk_id,
+                        updated_at=datetime.utcnow().isoformat(),
+                    )
+                    edge_count += 1
+        
+        return edge_count
+    
     async def _ensure_topic_hierarchy(self, session, item: CategorizedItem):
         """Ensure topic and subtopic nodes exist and are connected."""
         topic_name = item.primary_topic.value
@@ -454,21 +543,14 @@ class Neo4jGraphStore:
         # Connect entity to subtopic (or topic)
         entity_query = """
         MATCH (e:Entity {name: $entity_name})
-        WITH e
-        CALL {
-            WITH e
-            MATCH (t:Topic {name: $topic_name})
-            OPTIONAL MATCH (s:SubTopic {name: $subtopic, parent_topic: $topic_name})
-            WITH e, t, s
-            WHERE s IS NOT NULL
+        OPTIONAL MATCH (t:Topic {name: $topic_name})
+        OPTIONAL MATCH (s:SubTopic {name: $subtopic, parent_topic: $topic_name})
+        FOREACH (_ IN CASE WHEN s IS NOT NULL THEN [1] ELSE [] END |
             MERGE (e)-[:BELONGS_TO]->(s)
-            RETURN count(*) as cnt
-            UNION
-            WITH e, t
-            WHERE $subtopic IS NULL OR $subtopic = ''
+        )
+        FOREACH (_ IN CASE WHEN s IS NULL AND t IS NOT NULL THEN [1] ELSE [] END |
             MERGE (e)-[:BELONGS_TO]->(t)
-            RETURN count(*) as cnt
-        }
+        )
         RETURN 1
         """
         await session.run(entity_query, 

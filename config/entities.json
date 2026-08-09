@@ -1,5 +1,11 @@
 {
   "entity_patterns": {
+    "tool": [
+      "opal", "stitch", "antigravity", "mixboard", "nano bananas", "cloud code",
+      "vscode", "intellij", "vim", "neovim", "cursor", "windsurf", "zed",
+      "github copilot", "claude", "chatgpt", "gemini",
+      "firecrawl", "localsend", "404 animations", "404animations"
+    ],
     "framework": [
       "react", "vue", "svelte", "angular", "next.js", "nuxt", "astro", "remix", "solid", "qwik",
       "django", "fastapi", "flask", "express", "nest.js", "spring", "laravel", "rails",
@@ -15,24 +21,16 @@
       "kubernetes", "k8s", "docker", "terraform", "ansible"
     ],
     "service": [
-      "stripe", "auth0", "clerk", "supabase", "firebase", "planetscale", "neon",
-      "github", "gitlab", "bitbucket"
+      "stripe", "auth0", "clerk", "supabase", "firebase", "planetscale", "neon"
     ],
     "database": [
       "postgres", "mysql", "mongodb", "redis", "sqlite", "planetscale", "neon"
-    ],
-    "tool": [
-      "vscode", "intellij", "vim", "neovim", "cursor", "windsurf", "zed",
-      "github copilot", "claude", "chatgpt", "gemini"
     ],
     "web_app": [
       "saas", "dashboard", "admin panel", "web app"
     ],
     "mobile_app": [
       "react native", "expo", "flutter", "ios", "android", "swift", "kotlin"
-    ],
-    "language": [
-      "typescript", "javascript", "python", "rust", "golang", "java"
     ],
     "api": [
       "rest api", "graphql", "grpc", "webhook"
@@ -46,6 +44,7 @@
     ]
   },
   "known_entities": [
+    "opal", "stitch", "antigravity", "mixboard", "nano bananas", "cloud code",
     "react", "vue", "svelte", "angular", "next.js", "nuxt", "astro", "remix",
     "django", "fastapi", "flask", "express", "nest.js", "spring", "laravel",
     "tailwind", "bootstrap", "material-ui", "chakra", "shadcn", "radix",
@@ -54,16 +53,15 @@
     "aws", "gcp", "azure", "vercel", "netlify", "railway", "render", "fly.io",
     "kubernetes", "docker", "terraform", "ansible",
     "stripe", "auth0", "clerk", "supabase", "firebase",
-    "github", "gitlab", "bitbucket",
     "vscode", "intellij", "vim", "neovim", "cursor", "windsurf",
     "jest", "vitest", "playwright", "cypress", "pytest",
     "react native", "expo", "flutter",
-    "typescript", "javascript", "python", "rust", "java", "kotlin",
     "blender", "unity", "unreal", "unreal engine", "maya", "cinema 4d", "c4d",
     "3ds max", "houdini", "zbrush", "mudbox", "substance painter",
     "substance designer", "after effects", "premiere pro", "final cut",
     "davinci resolve", "photoshop", "illustrator", "figma", "sketch",
-    "d5 render", "vray", "corona", "octane", "redshift", "arnold"
+    "d5 render", "vray", "corona", "octane", "redshift", "arnold",
+    "firecrawl", "localsend", "404 animations", "freecss"
   ],
   "blacklist_words": [
     "follow", "followed", "following", "follows",
@@ -105,7 +103,14 @@
     "play", "played", "playing", "live", "living",
     "stop", "stopped", "wait", "waiting",
     "think", "thought", "feel", "felt",
-    "know", "known", "say", "said"
+    "know", "known", "say", "said",
+    "open", "workforce", "website", "link",
+    "anti", "second", "hand",
+    "google", "secretly", "launched", "free", "tools",
+    "actually", "definitely", "really", "just", "also",
+    "developer advocate", "developer", "advocate",
+    "check out", "make sure", "subscribe",
+    "link in bio", "follow for more", "link in description"
   ],
   "min_entity_length": 3
 }

@@ -1,12 +1,9 @@
 export interface Video {
   id: string
-  youtube_id: string
   url: string
   title: string
-  channel: string
-  thumbnail: string
-  duration: number
   summary: string
+  entities_count: number
   created_at: string
 }
 

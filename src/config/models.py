@@ -31,6 +31,9 @@ class EntityType(str, Enum):
     DATABASE = "database"
     LANGUAGE = "language"
     CREATIVE_SOFTWARE = "creative_software"
+    CONCEPT = "concept"
+    PATTERN = "pattern"
+    TECHNIQUE = "technique"
     UNKNOWN = "unknown"
 
 
@@ -84,6 +87,14 @@ class EnrichedEntity(BaseModel):
     mentioned_at: datetime = Field(default_factory=datetime.utcnow)
 
 
+class ExtractedRelationship(BaseModel):
+    source: str
+    target: str
+    relation_type: str
+    description: str = ""
+    confidence: float = 0.0
+
+
 class CategorizedItem(BaseModel):
     entity: EnrichedEntity
     primary_topic: TopicCategory = TopicCategory.OTHER
@@ -94,6 +105,7 @@ class CategorizedItem(BaseModel):
     tags: List[str] = Field(default_factory=list)
     summary: str = ""
     key_points: List[str] = Field(default_factory=list)
+    relationships: List[ExtractedRelationship] = Field(default_factory=list)
     categorized_at: datetime = Field(default_factory=datetime.utcnow)
 
 
@@ -105,6 +117,8 @@ class ProcessingResult(BaseModel):
     chunks: List[DocumentChunk] = Field(default_factory=list)
     entities: List[EnrichedEntity] = Field(default_factory=list)
     categorized_items: List[CategorizedItem] = Field(default_factory=list)
+    relationships: List[ExtractedRelationship] = Field(default_factory=list)
+    steps: List[str] = Field(default_factory=list)  # Step-by-step guide
     processing_time_ms: int = 0
     stages_completed: List[str] = Field(default_factory=list)
 

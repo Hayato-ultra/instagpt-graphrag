@@ -1,6 +1,7 @@
 # Temporary working directories
 temp_media/
 temp_frames/
+downloads/
 
 # Environment files
 .env
@@ -24,5 +25,12 @@ Desktop.ini
 .DS_Store
 docs/
 
+# Debug
+_debug_pipeline.py
+
+# Frontend deps
+frontend/node_modules/
+
+# Output & text files
 *.txt
 outputs/

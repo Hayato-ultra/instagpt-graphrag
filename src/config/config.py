@@ -53,6 +53,9 @@ class Settings(BaseSettings):
     QDRANT_API_KEY: str = ""
     QDRANT_COLLECTION: str = "knowledge_graph"
 
+    # PostgreSQL Database
+    DATABASE_URL: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/instagpt"
+
     # Neo4j Graph DB
     NEO4J_URI: str = "bolt://localhost:7687"
     NEO4J_USER: str = "neo4j"

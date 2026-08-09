@@ -157,6 +157,13 @@ class LLMClient:
             base_url=settings.OLLAMA_BASE_URL,
         )
         
+        # Track provider health
+        self._provider_health = {
+            LLMProvider.OLLAMA: {"healthy": True, "last_check": 0},
+            LLMProvider.OPENAI: {"healthy": True, "last_check": 0},
+            LLMProvider.OPENROUTER: {"healthy": True, "last_check": 0},
+        }
+        
         # Colab (remote via Google Colab + vLLM)
         self.colab_client = None
         if getattr(settings, 'COLAB_BASE_URL', None) and settings.COLAB_BASE_URL:
@@ -172,9 +179,32 @@ class LLMClient:
             **{p.value: {"calls": 0, "tokens": 0, "errors": 0} for p in LLMProvider}
         }
     
+    async def check_ollama_health(self) -> bool:
+        """Check if Ollama is running and responsive."""
+        import time
+        import httpx
+        
+        # Cache health check for 30 seconds
+        now = time.time()
+        if now - self._provider_health[LLMProvider.OLLAMA]["last_check"] < 30:
+            return self._provider_health[LLMProvider.OLLAMA]["healthy"]
+        
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                response = await client.get(f"{settings.OLLAMA_BASE_URL}/../api/tags")
+                healthy = response.status_code == 200
+                self._provider_health[LLMProvider.OLLAMA] = {"healthy": healthy, "last_check": now}
+                if not healthy:
+                    logger.warning(f"Ollama health check failed: {response.status_code}")
+                return healthy
+        except Exception as e:
+            logger.warning(f"Ollama health check failed: {e}")
+            self._provider_health[LLMProvider.OLLAMA] = {"healthy": False, "last_check": now}
+            return False
+    
     @retry(
-        stop=stop_after_attempt(2),
-        wait=wait_exponential(multiplier=1, min=1, max=5),
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=1, max=10),
         retry=retry_if_exception_type((Exception,))
     )
     async def _chat_completion_single(
@@ -276,9 +306,14 @@ class LLMClient:
             chain.remove(self._preferred_provider)
             chain.insert(0, self._preferred_provider)
         
-        # Filter to only available clients
+        # Filter to only available clients and check health
         available_chain = []
         for p in chain:
+            # Skip unhealthy providers
+            if p in self._provider_health and not self._provider_health[p]["healthy"]:
+                logger.debug(f"Skipping unhealthy provider: {p.value}")
+                continue
+                
             if p == LLMProvider.OPENAI:
                 available_chain.append(p)
             elif p == LLMProvider.OPENROUTER and self.openrouter_client:
@@ -288,7 +323,11 @@ class LLMClient:
             elif p == LLMProvider.GOOGLE and self.google_client:
                 available_chain.append(p)
             elif p == LLMProvider.OLLAMA and self.ollama_client:
-                available_chain.append(p)
+                # Check Ollama health before adding
+                if await self.check_ollama_health():
+                    available_chain.append(p)
+                else:
+                    logger.warning("Ollama is not healthy, skipping")
             elif p == LLMProvider.COLAB and self.colab_client:
                 available_chain.append(p)
         

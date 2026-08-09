@@ -1,44 +1,57 @@
 # Web framework
-fastapi
-uvicorn[standard]
-python-multipart
+fastapi>=0.111
+uvicorn[standard]>=0.30
+python-multipart>=0.0.9
+websockets>=12.0
 
 # Database
-sqlalchemy[asyncio]
-aiosqlite
-alembic
+sqlalchemy[asyncio]>=2.0
+asyncpg>=0.30
+alembic>=1.14
+psycopg2-binary>=2.9
 
 # Pydantic
-pydantic
-pydantic-settings
+pydantic>=2.7
+pydantic-settings>=2.3
 
 # LLM providers
-groq
-openai
-google-generativeai
-httpx
+openai>=1.35
+httpx>=0.27
 
 # YouTube / video
-yt-dlp
-faster-whisper
-youtube-transcript-api
+yt-dlp>=2024.1
 
 # Web search
-tavily-python
+duckduckgo-search>=7.2
 
 # Graph DB
-neo4j
-sentence-transformers
+neo4j>=5.14
+
+# Vector DB
+qdrant-client>=1.10
+
+# NLP & Embeddings
+tiktoken>=0.7
+sentence-transformers>=3.0
+nltk>=3.8
+
+# Web scraping
+beautifulsoup4>=4.12
+lxml>=5.2
+readability-lxml>=0.8
+trafilatura>=1.6
+playwright>=1.44
 
 # Image processing
-opencv-python
-Pillow
-imagehash
+Pillow>=10.0
 
 # Utilities
-python-dotenv
-aiofiles
-python-dateutil
-numpy
-pypdf
-pdfplumber
+python-dotenv>=1.0
+orjson>=3.10
+rich>=13.7
+loguru>=0.7
+typer>=0.12
+tenacity>=8.2
+asyncio-throttle>=1.0
+python-dateutil>=2.9
+pyyaml>=6.0

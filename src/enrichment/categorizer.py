@@ -9,6 +9,7 @@ from src.config.models import (
     CategorizedItem,
     ContentType,
     EnrichedEntity,
+    ExtractedRelationship,
     TopicCategory,
 )
 from src.enrichment import LLMClient
@@ -90,7 +91,7 @@ CONTENT_TYPE_DEFINITIONS = {
 class Categorizer:
     def __init__(self):
         self.llm = LLMClient()
-        self.model = settings.OPENAI_CHAT_MODEL
+        self.model = None  # Let LLMClient use configured provider's model
 
     async def categorize(self, entities: list[EnrichedEntity]) -> list[CategorizedItem]:
         """Categorize all entities with concurrent LLM calls."""
@@ -124,7 +125,7 @@ class Categorizer:
         )
         all_subtopics = {t.value: subs for t, subs in TOPIC_TAXONOMY.items()}
 
-        prompt = f"""Analyze the following tech content and return a JSON object
+        prompt = f"""Analyze the following tech content deeply and return a JSON object
 with ALL of these fields:
 
 1. "topic": ONE of [{", ".join(topics)}]
@@ -132,8 +133,12 @@ with ALL of these fields:
 3. "subtopics": array of 1-3 strings from the subtopics list matching the chosen topic
 4. "content_type": ONE of the content types below
 5. "type_confidence": float 0.0-1.0
-6. "summary": 1-2 sentence summary OF THE SOURCE CONTENT
-7. "key_points": array of 3-5 key points FROM THE SOURCE
+6. "summary": 2-3 sentence summary describing WHAT the content covers, WHY it matters,
+   and WHO it's for. Do not just restate the title — synthesize the full content.
+7. "key_points": array of 3-7 key points. Each point should be a concrete takeaway,
+   lesson, or actionable insight. Include specific tools, techniques, or approaches mentioned.
+8. "detailed_analysis": 2-3 paragraphs analyzing the content's approach, comparing it to
+   alternatives where relevant, and noting any trade-offs or considerations mentioned.
 
 Content type definitions:
 {content_type_defs}
@@ -146,16 +151,23 @@ Content to analyze:
 
 IMPORTANT: The summary and key_points must come FROM THE SOURCE CONTENT.
 If the source says "select X then press Y", include that in key_points.
+For detailed_analysis, you may supplement with general knowledge to provide context.
 
 Example response format:
 {{
-  "topic": "creative_software",
+  "topic": "ai_ml",
   "topic_confidence": 0.9,
-  "subtopics": ["3d-modeling"],
+  "subtopics": ["rag", "embeddings"],
   "content_type": "tutorial",
   "type_confidence": 0.85,
-  "summary": "Video shows how to create custom axes in Blender.",
-  "key_points": ["Select Transform Orientations > Local", "Press + to create axis"]
+  "summary": "Demonstrates building a RAG pipeline using LangChain and Pinecone for semantic search over technical documentation. Covers embedding generation, vector storage, and retrieval-augmented generation patterns.",
+  "key_points": [
+    "Uses OpenAI text-embedding-3-small for document chunking",
+    "Pinecone serves as the vector store with cosine similarity",
+    "Retrieval chain combines similarity search with LLM generation",
+    "Chunk size of 500 tokens with 50 token overlap works best for technical docs"
+  ],
+  "detailed_analysis": "This tutorial takes a practical approach to RAG by walking through each component of the pipeline. The author chooses LangChain for its chain abstraction, which simplifies connecting embeddings, vector stores, and LLMs. The approach is effective for technical documentation where precise retrieval matters more than creative generation. Compared to alternatives like Haystack or LlamaIndex, LangChain offers more flexibility but requires more boilerplate. The trade-off is worth it for production systems where you need fine-grained control over the retrieval step."
 }}
 
 Return ONLY valid JSON."""
@@ -165,18 +177,19 @@ Return ONLY valid JSON."""
                 {
                     "role": "system",
                     "content": (
-                        "You are a content analyzer. Extract and summarize "
-                        "information FROM THE SOURCE ONLY. The summary should "
-                        "describe what the content says, not what the entity is. "
-                        "Key points should be specific steps, actions, or "
-                        "instructions from the source. Return valid JSON."
+                        "You are a technical content analyst and knowledge graph curator. "
+                        "Analyze the content deeply — understand not just WHAT it says, "
+                        "but WHY it matters, HOW it compares to alternatives, and WHO "
+                        "would benefit from it. The summary should synthesize the full "
+                        "content, not just restate the title. Key points should be "
+                        "concrete, actionable takeaways. The detailed_analysis should "
+                        "provide expert-level commentary. Return valid JSON."
                     ),
                 },
                 {"role": "user", "content": prompt},
             ],
-            model=self.model,
-            temperature=0.1,
-            max_tokens=500,
+            temperature=0.2,
+            max_tokens=1500,
             response_format={"type": "json_object"},
         )
 
@@ -241,12 +254,14 @@ Return ONLY valid JSON."""
         """Prepare text for classification."""
         web_snippets = " ".join(w.get("snippet", "") for w in entity.web_info[:5])
         # Use source_text if available, otherwise fall back to description
-        source_content = entity.source_text[:500] if entity.source_text else ""
+        source_content = entity.source_text[:800] if entity.source_text else ""
+        # For short content, use more of the description
+        desc_preview = entity.description[:400] if len(entity.description) > 200 else entity.description
         return (
             f"Name: {entity.name}\n"
             f"Type: {entity.type.value}\n"
             f"Source Content: {source_content}\n"
-            f"Description: {entity.description}\n"
+            f"Description: {desc_preview}\n"
             f"Web: {web_snippets}"
         )
 
@@ -271,6 +286,9 @@ Return ONLY valid JSON."""
             "kubernetes", "docker", "terraform", "github", "gitlab",
             "openai", "anthropic", "langchain", "llamaindex",
             "jest", "vitest", "playwright", "cypress", "pytest",
+            "microservices", "serverless", "ci/cd", "devops", "gitops",
+            "rag", "embeddings", "llm", "fine-tuning", "prompt-engineering",
+            "jwt", "oauth", "tdd", "bdd", "agile", "scrum",
         ]
 
         for kw in tech_keywords:

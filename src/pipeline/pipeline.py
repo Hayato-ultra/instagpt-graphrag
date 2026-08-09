@@ -12,6 +12,7 @@ from src.config.models import (
     DocumentChunk,
     EnrichedEntity,
     CategorizedItem,
+    ExtractedRelationship,
 )
 from src.extraction import ContentExtractor, SemanticChunker
 from src.vector import Embedder, VectorStore
@@ -97,9 +98,9 @@ class KnowledgeGraphPipeline:
             # Store chunks in vector DB
             self.vector_store.upsert_chunks(chunks, str(url))
             
-            # Stage 4: Enrich (detect entities + web search)
+            # Stage 4: Enrich (detect entities + web search + relationships)
             logger.info("Stage 4: Enriching with entity detection & web search")
-            entities = await self.enrichment.enrich(chunks)
+            entities, relationships, steps = await self.enrichment.enrich(chunks)
             
             # Deduplicate entities by name
             entities = self._deduplicate_entities(entities)
@@ -115,12 +116,16 @@ class KnowledgeGraphPipeline:
             md_path, json_path = generate_outputs(
                 categorized, 
                 str(url), 
-                settings.OUTPUT_DIR
+                settings.OUTPUT_DIR,
+                steps=steps,  # Pass steps to output generator
             )
             
             # Stage 7: Update neural graph
             logger.info("Stage 7: Updating neural graph")
-            merge_result = await self.graph_store.upsert_knowledge(categorized)
+            merge_result = await self.graph_store.upsert_knowledge(
+                categorized,
+                relationships=relationships,
+            )
             stages.append(PipelineStage.GRAPH_UPDATE)
             
             processing_time = int((time.time() - start_time) * 1000)
@@ -132,6 +137,8 @@ class KnowledgeGraphPipeline:
                 chunks=chunks,
                 entities=entities,
                 categorized_items=categorized,
+                relationships=relationships,
+                steps=steps,  # Include extracted steps
                 processing_time_ms=processing_time,
                 stages_completed=stages
             )

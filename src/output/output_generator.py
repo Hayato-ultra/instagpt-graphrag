@@ -8,7 +8,7 @@ from loguru import logger
 
 
 class MarkdownGenerator:
-    def generate(self, items: List[CategorizedItem], source_url: str = "") -> str:
+    def generate(self, items: List[CategorizedItem], source_url: str = "", steps: List[str] = None) -> str:
         """Generate markdown output from categorized items."""
         if not items:
             return "# No Content Extracted\n\nNo entities were found in the source."
@@ -21,6 +21,27 @@ class MarkdownGenerator:
             md.append(f"**Source:** [{source_url}]({source_url})")
             md.append("")
         
+        # Step-by-step guide (if available)
+        if steps:
+            md.append("## Step-by-Step Guide")
+            md.append("")
+            for i, step in enumerate(steps, 1):
+                md.append(f"{i}. {step}")
+            md.append("")
+        
+        # Single overall summary
+        md.append("## Summary")
+        md.append("")
+        summary_parts = []
+        for item in items:
+            if item.summary:
+                summary_parts.append(item.summary)
+        if summary_parts:
+            md.append(" ".join(summary_parts))
+        else:
+            md.append(f"Extracted {len(items)} items from the source.")
+        md.append("")
+        
         md.append(f"**Items Found:** {len(items)}")
         md.append("")
         
@@ -31,18 +52,10 @@ class MarkdownGenerator:
             md.append(f"## {topic.value.replace('_', ' ').title()}")
             md.append("")
             
-            # Group by sub-topic
-            by_subtopic = self._group_by_subtopic(topic_items)
-            
-            for subtopic, sub_items in sorted(by_subtopic.items()):
-                if subtopic:
-                    md.append(f"### {subtopic.replace('-', ' ').title()}")
-                    md.append("")
-                
-                for item in sub_items:
-                    md.append(self._render_item(item))
-                    md.append("---")
-                    md.append("")
+            for item in topic_items:
+                md.append(self._render_item(item))
+                md.append("---")
+                md.append("")
         
         # Add index
         md.append("## Index")
@@ -88,11 +101,6 @@ class MarkdownGenerator:
         lines.append(" | ".join(badges))
         lines.append("")
         
-        # Summary
-        if item.summary:
-            lines.append(f"**Summary:** {item.summary}")
-            lines.append("")
-        
         # Description
         if item.entity.description:
             lines.append(f"**Description:** {item.entity.description[:500]}")
@@ -105,24 +113,11 @@ class MarkdownGenerator:
                 lines.append(f"- {point}")
             lines.append("")
         
-        # Similar tools
-        if item.entity.similar_tools:
-            lines.append("**Similar Tools / Alternatives:**")
-            for tool in item.entity.similar_tools[:5]:
-                name = tool.get("name", "Unknown")
-                desc = tool.get("description", "")[:100]
-                url = tool.get("url", "")
-                if url:
-                    lines.append(f"- [{name}]({url}): {desc}")
-                else:
-                    lines.append(f"- {name}: {desc}")
-            lines.append("")
-        
-        # Web references
+        # Web references (website links spoken in video)
         if item.entity.web_info:
-            lines.append("**References:**")
+            lines.append("**Website:**")
             seen_urls = set()
-            for ref in item.entity.web_info[:5]:
+            for ref in item.entity.web_info[:3]:
                 url = ref.get("url", "")
                 if url and url not in seen_urls:
                     seen_urls.add(url)
@@ -161,7 +156,7 @@ class MarkdownGenerator:
 
 
 class JSONGenerator:
-    def generate(self, items: List[CategorizedItem], source_url: str = "") -> Dict[str, Any]:
+    def generate(self, items: List[CategorizedItem], source_url: str = "", steps: List[str] = None) -> Dict[str, Any]:
         """Generate JSON output from categorized items."""
         return {
             "metadata": {
@@ -170,8 +165,11 @@ class JSONGenerator:
                 "total_items": len(items),
                 "topics": list(set(item.primary_topic.value for item in items)),
                 "content_types": list(set(item.content_type.value for item in items)),
-                "entity_types": list(set(item.entity.type.value for item in items))
+                "entity_types": list(set(item.entity.type.value for item in items)),
+                "has_steps": bool(steps),
+                "steps_count": len(steps) if steps else 0
             },
+            "steps": steps or [],
             "items": [self._serialize_item(item) for item in items]
         }
     
@@ -216,14 +214,15 @@ class JSONGenerator:
 def generate_outputs(
     items: List[CategorizedItem],
     source_url: str,
-    output_dir: str
+    output_dir: str,
+    steps: List[str] = None
 ) -> tuple[Path, Path]:
     """Generate both markdown and JSON outputs."""
     md_gen = MarkdownGenerator()
     json_gen = JSONGenerator()
     
-    md_content = md_gen.generate(items, source_url)
-    json_data = json_gen.generate(items, source_url)
+    md_content = md_gen.generate(items, source_url, steps=steps)
+    json_data = json_gen.generate(items, source_url, steps=steps)
     
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     base_name = f"extract_{timestamp}"
