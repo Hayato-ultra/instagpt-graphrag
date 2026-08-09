@@ -994,6 +994,8 @@ class EnrichmentPipeline:
             "animprops.com": "AnimWorkKes",
             "agora.com": "Agora.com",
             "gumroad.com": "Gumroad.com",
+            "ora.com": "Agora.com",
+            "animworks.com": "AnimWorkKes",
         }
         
         seen_urls = set()
@@ -1152,6 +1154,20 @@ class EnrichmentPipeline:
                     "snippet": r.snippet,
                     "source": r.source,
                 })
+
+            # If no web_info from search, but entity was extracted from URL pattern
+            # (confidence >= 0.9 indicates URL extraction), add the URL as web_info
+            if not web_info and entity_data.get("confidence", 0) >= 0.9:
+                name = entity_data["name"]
+                # Check if name looks like a domain
+                import re as re_module
+                if re_module.match(r'^[a-zA-Z0-9-]+\.(com|org|net|io|dev|app|co)$', name):
+                    web_info.append({
+                        "title": name,
+                        "url": f"https://{name}",
+                        "snippet": f"Website found in video content",
+                        "source": "ocr_extraction",
+                    })
 
             similar_tools = [
                 {

@@ -133,12 +133,11 @@ with ALL of these fields:
 3. "subtopics": array of 1-3 strings from the subtopics list matching the chosen topic
 4. "content_type": ONE of the content types below
 5. "type_confidence": float 0.0-1.0
-6. "summary": 2-3 sentence summary describing WHAT the content covers, WHY it matters,
-   and WHO it's for. Do not just restate the title — synthesize the full content.
-7. "key_points": array of 3-7 key points. Each point should be a concrete takeaway,
-   lesson, or actionable insight. Include specific tools, techniques, or approaches mentioned.
-8. "detailed_analysis": 2-3 paragraphs analyzing the content's approach, comparing it to
-   alternatives where relevant, and noting any trade-offs or considerations mentioned.
+6. "summary": 2-3 sentence summary describing WHAT the content covers based ONLY on the source content.
+   Do NOT invent information not in the source. If the source shows Maya rigs, say "The content shows Maya rigs".
+7. "key_points": array of 3-7 key points. Each point should be something explicitly mentioned in the source.
+   Include specific names, tools, or websites visible in the source.
+8. "detailed_analysis": 2-3 paragraphs analyzing the content's approach based ONLY on what the source shows.
 
 Content type definitions:
 {content_type_defs}
@@ -149,25 +148,26 @@ Available subtopics per topic:
 Content to analyze:
 {text}
 
-IMPORTANT: The summary and key_points must come FROM THE SOURCE CONTENT.
-If the source says "select X then press Y", include that in key_points.
-For detailed_analysis, you may supplement with general knowledge to provide context.
+CRITICAL RULES:
+- ONLY describe what is EXPLICITLY in the source content
+- Do NOT hallucinate or infer information not present
+- If the source shows a video about Maya 3D rigs, describe it as "Maya 3D animation software" NOT "React application"
+- Key points must be things actually mentioned or shown in the source
 
 Example response format:
 {{
-  "topic": "ai_ml",
+  "topic": "other",
   "topic_confidence": 0.9,
-  "subtopics": ["rag", "embeddings"],
-  "content_type": "tutorial",
+  "subtopics": [],
+  "content_type": "tool_review",
   "type_confidence": 0.85,
-  "summary": "Demonstrates building a RAG pipeline using LangChain and Pinecone for semantic search over technical documentation. Covers embedding generation, vector storage, and retrieval-augmented generation patterns.",
+  "summary": "The content showcases Maya rigs from Agora Studio, including Gamma and Alpha characters. Various rigs are displayed on Gumroad.com for animators.",
   "key_points": [
-    "Uses OpenAI text-embedding-3-small for document chunking",
-    "Pinecone serves as the vector store with cosine similarity",
-    "Retrieval chain combines similarity search with LLM generation",
-    "Chunk size of 500 tokens with 50 token overlap works best for technical docs"
+    "Shows Gamma character from Agora Original Rigs family",
+    "Displays Maya rigs available on Gumroad.com",
+    "Features Sheriff Rig, Spider Silk, and BreinerRigger"
   ],
-  "detailed_analysis": "This tutorial takes a practical approach to RAG by walking through each component of the pipeline. The author chooses LangChain for its chain abstraction, which simplifies connecting embeddings, vector stores, and LLMs. The approach is effective for technical documentation where precise retrieval matters more than creative generation. Compared to alternatives like Haystack or LlamaIndex, LangChain offers more flexibility but requires more boilerplate. The trade-off is worth it for production systems where you need fine-grained control over the retrieval step."
+  "detailed_analysis": "This content is a showcase of Maya 3D animation rigs. The video displays characters from Agora Studio's Original Rigs family..."
 }}
 
 Return ONLY valid JSON."""
@@ -177,13 +177,12 @@ Return ONLY valid JSON."""
                 {
                     "role": "system",
                     "content": (
-                        "You are a technical content analyst and knowledge graph curator. "
-                        "Analyze the content deeply — understand not just WHAT it says, "
-                        "but WHY it matters, HOW it compares to alternatives, and WHO "
-                        "would benefit from it. The summary should synthesize the full "
-                        "content, not just restate the title. Key points should be "
-                        "concrete, actionable takeaways. The detailed_analysis should "
-                        "provide expert-level commentary. Return valid JSON."
+                        "You are a technical content analyst. CRITICAL RULE: "
+                        "You MUST ONLY describe what is explicitly stated in the Source Content. "
+                        "Do NOT invent, hallucinate, or assume information that is NOT in the source. "
+                        "The summary must be a faithful summary of what the source actually says. "
+                        "Key points must be things explicitly mentioned in the source. "
+                        "Return valid JSON."
                     ),
                 },
                 {"role": "user", "content": prompt},
