@@ -73,18 +73,41 @@ class KnowledgeGraphPipeline:
             await self.embedder.openai_client.close()
         await self.categorizer.close()
     
-    async def process_url(self, url: str) -> PipelineResult:
-        """Process a single URL through the full pipeline."""
+    async def process_url(self, url: str, stage_callback=None, force: bool = False) -> PipelineResult:
+        """Process a single URL through the full pipeline.
+        
+        Args:
+            url: The URL to process
+            stage_callback: Optional async callback(stage: str) for progress tracking
+            force: If True, reprocess even if already processed (idempotent)
+        """
         start_time = time.time()
         logger.info(f"Starting pipeline for: {url}")
         
+        async def _update_stage(stage: str):
+            if stage_callback:
+                await stage_callback(stage)
+        
+        # Idempotency check: skip if already processed (unless force=True)
+        if not force:
+            existing = await self.graph_store.get_entity(url)
+            if existing:
+                logger.info(f"URL already processed: {url}")
+                return PipelineResult(
+                    success=True,
+                    url=url,
+                    graph_stats={"status": "already_processed"},
+                )
+        
         try:
             # Stage 1: Extract
+            await _update_stage("extracting")
             logger.info("Stage 1: Extracting content")
             extracted = await self.extractor.extract(url)
             stages = [PipelineStage.EXTRACT]
             
             # Stage 2: Chunk
+            await _update_stage("chunking")
             logger.info("Stage 2: Chunking content")
             chunks = self.chunker.chunk(extracted.raw_text, extracted.title)
             for chunk in chunks:
@@ -92,6 +115,7 @@ class KnowledgeGraphPipeline:
             stages.append(PipelineStage.ENRICH)
             
             # Stage 3: Embed chunks
+            await _update_stage("embedding")
             logger.info("Stage 3: Embedding chunks")
             chunks = await self.embedder.embed_chunks(chunks)
             
@@ -99,6 +123,7 @@ class KnowledgeGraphPipeline:
             self.vector_store.upsert_chunks(chunks, str(url))
             
             # Stage 4: Enrich (detect entities + web search + relationships)
+            await _update_stage("enriching")
             logger.info("Stage 4: Enriching with entity detection & web search")
             entities, relationships, steps = await self.enrichment.enrich(chunks)
             
@@ -107,11 +132,13 @@ class KnowledgeGraphPipeline:
             stages.append(PipelineStage.CATEGORIZE)
             
             # Stage 5: Categorize
+            await _update_stage("categorizing")
             logger.info("Stage 5: Categorizing entities")
             categorized = await self.categorizer.categorize(entities)
             stages.append(PipelineStage.FORMAT)
             
             # Stage 6: Generate outputs
+            await _update_stage("formatting")
             logger.info("Stage 6: Generating outputs")
             md_path, json_path = generate_outputs(
                 categorized, 
@@ -121,6 +148,7 @@ class KnowledgeGraphPipeline:
             )
             
             # Stage 7: Update neural graph
+            await _update_stage("graph_update")
             logger.info("Stage 7: Updating neural graph")
             merge_result = await self.graph_store.upsert_knowledge(
                 categorized,

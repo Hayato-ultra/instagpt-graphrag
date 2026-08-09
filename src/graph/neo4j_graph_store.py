@@ -11,6 +11,7 @@ from src.config import get_settings
 from src.config.models import CategorizedItem, EnrichedEntity, EntityType, ContentType, ExtractedRelationship
 from src.vector import VectorStore
 from src.graph.base import GraphStore, MergeResult
+from src.graph.entity_resolver import EntityResolver, Resolution
 from loguru import logger
 
 
@@ -30,6 +31,7 @@ class Neo4jGraphStore(GraphStore):
         self.driver: Optional[AsyncDriver] = None
         self.vector_store = VectorStore()
         self.embedder = None  # Set by pipeline
+        self.resolver = None  # Initialized in connect()
         self.llm_client = LLMClient()  # Use unified LLM client with Ollama support
         
         # Similarity thresholds
@@ -43,25 +45,21 @@ class Neo4jGraphStore(GraphStore):
     
     async def connect(self):
         """Initialize Neo4j connection and create constraints/indexes."""
-        # Debug: log credentials (masked)
-        logger.info(f"--- DEBUG NEO4J CONNECT ---")
-        logger.info(f"URI: {self.uri}")
-        logger.info(f"USER: {self.user}")
-        logger.info(f"PASS LENGTH: {len(self.password)}")
-        logger.info(f"PASS PREVIEW: {'*' * max(0, len(self.password) - 4)}{self.password[-4:] if len(self.password) > 4 else ''}")
-        logger.info(f"----------------------------")
-        
         self.driver = AsyncGraphDatabase.driver(
             self.uri,
             auth=(self.user, self.password)
         )
         
-        # Verify connection
         await self.driver.verify_connectivity()
         logger.info("Connected to Neo4j")
         
-        # Create constraints and indexes
         await self._create_schema()
+        
+        # Initialize entity resolver (centralized dedup logic)
+        self.resolver = EntityResolver(
+            vector_store=self.vector_store,
+            embedder=self.embedder,
+        )
     
     async def close(self):
         """Close Neo4j connection."""
@@ -72,18 +70,21 @@ class Neo4jGraphStore(GraphStore):
         """Create constraints and indexes for performance.
         
         Neo4j stores graph structure only. Vectors are in Qdrant.
+        Provenance: Source → Chunk → Entity (evidence chain)
         """
         queries = [
             # Unique constraints
             "CREATE CONSTRAINT entity_name IF NOT EXISTS FOR (e:Entity) REQUIRE e.name IS UNIQUE",
             "CREATE CONSTRAINT topic_name IF NOT EXISTS FOR (t:Topic) REQUIRE t.name IS UNIQUE",
             "CREATE CONSTRAINT source_url IF NOT EXISTS FOR (s:Source) REQUIRE s.url IS UNIQUE",
+            "CREATE CONSTRAINT chunk_id IF NOT EXISTS FOR (c:Chunk) REQUIRE c.id IS UNIQUE",
             
             # Indexes for common queries
             "CREATE INDEX entity_type IF NOT EXISTS FOR (e:Entity) ON (e.type)",
             "CREATE INDEX entity_topic IF NOT EXISTS FOR (e:Entity) ON (e.topic)",
             "CREATE INDEX entity_updated IF NOT EXISTS FOR (e:Entity) ON (e.updated_at)",
             "CREATE INDEX episodic_timestamp IF NOT EXISTS FOR (ep:EpisodicMemory) ON (ep.timestamp)",
+            "CREATE INDEX chunk_source IF NOT EXISTS FOR (c:Chunk) ON (c.source_url)",
             
             # Fulltext search index for entity search
             "CREATE FULLTEXT INDEX entity_search IF NOT EXISTS FOR (e:Entity) ON EACH [e.name, e.description, e.summary]",
@@ -98,24 +99,45 @@ class Neo4jGraphStore(GraphStore):
     
     def set_embedder(self, embedder):
         self.embedder = embedder
+        if self.resolver:
+            self.resolver.embedder = embedder
     
     async def upsert_knowledge(
         self,
         items: List[CategorizedItem],
         relationships: List[ExtractedRelationship] = None,
+        max_retries: int = 3,
     ) -> MergeResult:
-        """Upsert categorized items and relationships into Neo4j."""
+        """Upsert categorized items into Neo4j + Qdrant with retry logic.
+        
+        Both stores are updated per-item. If one fails, we retry the item
+        rather than rolling back the entire batch.
+        """
         result = MergeResult()
         
         async with self.driver.session() as session:
             for item in items:
-                try:
-                    merge_result = await self._upsert_item(session, item)
-                    result.new_nodes += merge_result.new_nodes
-                    result.updated_nodes += merge_result.updated_nodes
-                    result.merged_edges += merge_result.merged_edges
-                except Exception as e:
-                    error_msg = f"Failed to upsert {item.entity.name}: {e}"
+                last_error = None
+                for attempt in range(max_retries):
+                    try:
+                        merge_result = await self._upsert_item(session, item)
+                        result.new_nodes += merge_result.new_nodes
+                        result.updated_nodes += merge_result.updated_nodes
+                        result.merged_edges += merge_result.merged_edges
+                        last_error = None
+                        break
+                    except Exception as e:
+                        last_error = e
+                        if attempt < max_retries - 1:
+                            wait_time = 2 ** attempt  # Exponential backoff
+                            logger.warning(
+                                f"Retry {attempt+1}/{max_retries} for {item.entity.name} "
+                                f"after {wait_time}s: {e}"
+                            )
+                            await asyncio.sleep(wait_time)
+                
+                if last_error:
+                    error_msg = f"Failed to upsert {item.entity.name} after {max_retries} attempts: {last_error}"
                     logger.error(error_msg)
                     result.errors.append(error_msg)
             
@@ -136,80 +158,55 @@ class Neo4jGraphStore(GraphStore):
         return result
     
     async def _upsert_item(self, session, item: CategorizedItem) -> MergeResult:
-        """Upsert a single categorized item.
+        """Upsert a single categorized item using EntityResolver.
         
-        Deduplication priority:
-        1. Exact name match (case-insensitive) + same topic/sub-topic → MERGE
-        2. Exact name match + different topic → NEW node (different context)
-        3. Embedding similarity >= 0.92 → MERGE
-        4. Embedding similarity 0.85-0.92 → NEW node + SIMILAR_TO edge
-        5. No match → NEW node
+        Deduplication is handled by the centralized EntityResolver:
+        1. Exact name match → MERGE
+        2. Embedding similarity >= 0.92 → MERGE
+        3. Embedding similarity 0.85-0.92 → NEW + SIMILAR_TO edge
+        4. No match → NEW
         """
         result = MergeResult()
         entity = item.entity
-        topic_name = item.primary_topic.value
-        subtopic_name = item.sub_topics[0] if item.sub_topics else None
         
-        # Generate embedding for similarity check
-        if not self.embedder:
-            raise RuntimeError("Embedder not set — cannot generate entity embeddings")
-        
-        embedding = await self.embedder.embed_single(
-            f"{entity.name} {entity.type.value} {entity.description}"
+        # Use centralized entity resolver
+        resolution = await self.resolver.resolve(
+            name=entity.name,
+            entity_type=entity.type.value,
+            description=entity.description,
+            graph_store=self,
         )
         
-        # Priority 1: Exact name match (case-insensitive)
-        name_match = await self._find_by_name(session, entity.name)
-        if name_match:
-            # Entity already exists - always merge into it (unique constraint on name)
-            existing_payload = {
-                "id": name_match["id"],
-                "node_id": name_match["id"],
-                "qdrant_id": name_match.get("qdrant_id"),
-                "description": name_match.get("description", ""),
-            }
-            await self._merge_into_existing(session, name_match["id"], item, existing_payload)
-            result.updated_nodes += 1
-            return result
+        if resolution.decision == Resolution.MERGE:
+            # Merge into existing entity
+            if resolution.existing_entity_id:
+                existing_payload = {
+                    "id": resolution.existing_entity_id,
+                    "node_id": resolution.existing_entity_id,
+                    "qdrant_id": resolution.qdrant_id,
+                    "description": "",
+                }
+                await self._merge_into_existing(session, resolution.existing_entity_id, item, existing_payload)
+                result.updated_nodes += 1
+            else:
+                # Name match from resolver but no node_id — should not happen
+                logger.warning(f"MERGE resolution for '{entity.name}' but no existing_entity_id")
+                new_node_id = await self._create_entity_node(session, item, None)
+                result.new_nodes += 1
         
-        # Priority 2: Embedding similarity (fuzzy match)
-        similar = self.vector_store.search_similar(
-            query_vector=embedding,
-            limit=5,
-            filter_type="entity",
-            score_threshold=self.SIMILAR_ENTITY_THRESHOLD
-        )
-        
-        existing_qdrant_id = None
-        existing_node_id = None
-        
-        for match in similar:
-            if match["score"] >= self.SAME_ENTITY_THRESHOLD:
-                # SAME ENTITY (by embedding) - Update existing
-                existing_qdrant_id = match["id"]
-                existing_node_id = match["payload"].get("node_id")
-                if existing_node_id:
-                    await self._merge_into_existing(session, existing_node_id, item, match["payload"])
-                    result.updated_nodes += 1
-                break
-            elif match["score"] >= self.SIMILAR_ENTITY_THRESHOLD:
-                # SIMILAR ENTITY - track for edge creation
-                if existing_qdrant_id is None:
-                    existing_qdrant_id = match["id"]
-                    existing_node_id = match["payload"].get("node_id")
-        
-        if existing_qdrant_id is None:
-            # NEW ENTITY - Create new node
-            new_node_id = await self._create_entity_node(session, item, embedding)
+        elif resolution.decision == Resolution.SIMILAR:
+            # Create new node + SIMILAR_TO edge
+            new_node_id = await self._create_entity_node(session, item, None)
             result.new_nodes += 1
-            
-            # Create SIMILAR_TO edges if similar entities found
-            for match in similar:
-                if match["score"] >= self.SIMILAR_ENTITY_THRESHOLD:
-                    similar_node_id = match["payload"].get("node_id")
-                    if similar_node_id:
-                        await self._create_similar_edge(session, new_node_id, similar_node_id, match["score"])
-                        result.merged_edges += 1
+            if resolution.existing_entity_id:
+                await self._create_similar_edge(
+                    session, new_node_id, resolution.existing_entity_id, resolution.similarity_score
+                )
+                result.merged_edges += 1
+        
+        else:  # Resolution.NEW
+            new_node_id = await self._create_entity_node(session, item, None)
+            result.new_nodes += 1
         
         # Ensure topic hierarchy
         await self._ensure_topic_hierarchy(session, item)
@@ -233,11 +230,20 @@ class Neo4jGraphStore(GraphStore):
         record = await (await session.run(query, name=name)).single()
         return dict(record) if record else None
     
-    async def _create_entity_node(self, session, item: CategorizedItem, embedding: List[float]) -> str:
-        """Create a new entity node in Neo4j."""
+    async def _create_entity_node(self, session, item: CategorizedItem, embedding: List[float] = None) -> str:
+        """Create a new entity node in Neo4j + upsert embedding to Qdrant."""
         entity = item.entity
         node_id = f"entity-{entity.name.lower().replace(' ', '-')}-{uuid4().hex[:8]}"
         qdrant_id = str(uuid4())
+        
+        # Generate embedding if not provided
+        if embedding is None and self.embedder:
+            try:
+                embedding = await self.embedder.embed_single(
+                    f"{entity.name} {entity.type.value} {entity.description}"
+                )
+            except Exception as e:
+                logger.warning(f"Failed to embed entity '{entity.name}': {e}")
         
         # Build properties — vectors live in Qdrant, not Neo4j
         props = {
@@ -272,36 +278,46 @@ class Neo4jGraphStore(GraphStore):
         """
         await session.run(query, props=props)
         
-        # Also upsert in Qdrant for vector search (use UUID for Qdrant ID)
-        self.vector_store.client.upsert(
-            collection_name=settings.QDRANT_COLLECTION,
-            points=[{
-                "id": qdrant_id,
-                "vector": embedding,
-                "payload": {
-                    "id": node_id,
-                    "qdrant_id": qdrant_id,
-                    "name": entity.name,
-                    "type": entity.type.value,
-                    "topic": item.primary_topic.value,
-                    "sub_topic": item.sub_topics[0] if item.sub_topics else None,
-                    "content_type": item.content_type.value,
-                    "description": entity.description,
-                    "summary": item.summary,
-                    "key_points": item.key_points,
-                    "web_info": entity.web_info,
-                    "similar_tools": entity.similar_tools,
-                    "tags": item.tags,
-                    "source_url": entity.source_url,
-                    "source_chunk_id": entity.source_chunk_id,
-                    "confidence": entity.confidence,
-                    "version": 1,
-                    "created_at": datetime.utcnow().isoformat(),
-                    "updated_at": datetime.utcnow().isoformat(),
-                    "node_type": "entity"
-                }
-            }]
-        )
+        # Upsert embedding to Qdrant (vector authority) with retry
+        if embedding is not None:
+            for attempt in range(3):
+                try:
+                    self.vector_store.client.upsert(
+                        collection_name=settings.QDRANT_COLLECTION,
+                        points=[{
+                            "id": qdrant_id,
+                            "vector": embedding,
+                            "payload": {
+                                "id": node_id,
+                                "qdrant_id": qdrant_id,
+                                "name": entity.name,
+                                "type": entity.type.value,
+                                "topic": item.primary_topic.value,
+                                "sub_topic": item.sub_topics[0] if item.sub_topics else None,
+                                "content_type": item.content_type.value,
+                                "description": entity.description,
+                                "summary": item.summary,
+                                "key_points": item.key_points,
+                                "web_info": entity.web_info,
+                                "similar_tools": entity.similar_tools,
+                                "tags": item.tags,
+                                "source_url": entity.source_url,
+                                "source_chunk_id": entity.source_chunk_id,
+                                "confidence": entity.confidence,
+                                "version": 1,
+                                "created_at": datetime.utcnow().isoformat(),
+                                "updated_at": datetime.utcnow().isoformat(),
+                                "node_type": "entity"
+                            }
+                        }]
+                    )
+                    break
+                except Exception as e:
+                    if attempt < 2:
+                        logger.warning(f"Qdrant upsert retry {attempt+1}/3 for '{entity.name}': {e}")
+                        await asyncio.sleep(1)
+                    else:
+                        logger.error(f"Qdrant upsert failed for '{entity.name}': {e}")
         
         return node_id
     
@@ -614,6 +630,61 @@ class Neo4jGraphStore(GraphStore):
                 return "\n".join(lines)
             
             return json.dumps(records, default=str)
+    
+    async def upsert_source(self, url: str, title: str = "", metadata: dict = None) -> str:
+        """Upsert a Source node and return its ID."""
+        query = """
+        MERGE (s:Source {url: $url})
+        ON CREATE SET s.title = $title, s.created_at = $created_at, s.metadata = $metadata
+        ON MATCH SET s.title = $title, s.updated_at = $created_at
+        RETURN s.url as id
+        """
+        async with self.driver.session() as session:
+            await session.run(
+                query,
+                url=url,
+                title=title,
+                created_at=datetime.utcnow().isoformat(),
+                metadata=json.dumps(metadata or {}),
+            )
+        return url
+    
+    async def upsert_chunk(self, chunk_id: str, source_url: str, text: str, index: int = 0) -> str:
+        """Upsert a Chunk node and link to Source."""
+        query = """
+        MERGE (c:Chunk {id: $chunk_id})
+        ON CREATE SET c.text = $text, c.index = $index, c.source_url = $source_url
+        WITH c
+        MATCH (s:Source {url: $source_url})
+        MERGE (c)-[:EXTRACTED_FROM]->(s)
+        RETURN c.id as id
+        """
+        async with self.driver.session() as session:
+            await session.run(
+                query,
+                chunk_id=chunk_id,
+                source_url=source_url,
+                text=text[:1000],  # Truncate for storage
+                index=index,
+            )
+        return chunk_id
+    
+    async def link_entity_chunk(self, entity_name: str, chunk_id: str, evidence: str = ""):
+        """Link an Entity to a Chunk (provenance)."""
+        query = """
+        MATCH (e:Entity {name: $entity_name})
+        MATCH (c:Chunk {id: $chunk_id})
+        MERGE (e)-[r:EXTRACTED_FROM]->(c)
+        SET r.evidence = $evidence, r.created_at = $created_at
+        """
+        async with self.driver.session() as session:
+            await session.run(
+                query,
+                entity_name=entity_name,
+                chunk_id=chunk_id,
+                evidence=evidence[:500],
+                created_at=datetime.utcnow().isoformat(),
+            )
 
 
 # Factory function to choose graph store

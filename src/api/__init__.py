@@ -89,13 +89,16 @@ async def analyze_video(
 
 
 async def process_video_task(job_id: str, url: str):
-    """Background task to process video."""
+    """Background task to process video with stage tracking."""
     async for session in get_async_session():
         db = CRUDOperations(session)
         try:
-            await db.update_job_status(job_id, "processing", stage="extracting")
+            # Stage callback updates job in real-time
+            async def update_stage(stage: str):
+                await db.update_job_status(job_id, "processing", stage=stage)
+                await session.commit()
             
-            result = await pipeline.process_url(url)
+            result = await pipeline.process_url(url, stage_callback=update_stage)
             
             if result.success:
                 content = result.processing_result.extracted_content if result.processing_result else None

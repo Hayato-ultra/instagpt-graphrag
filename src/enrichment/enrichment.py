@@ -713,11 +713,14 @@ class EnrichmentPipeline:
     """Main enrichment pipeline combining detection, search, and relationship extraction."""
 
     BATCH_SIZE = 10  # max entities per LLM batch call (reduced for richer output)
+    CACHE_TTL = 3600  # 1 hour cache TTL
 
     def __init__(self):
         self.detector = EntityDetector()
         self.searcher = WebSearcher()
         self.llm = LLMClient()
+        self._enrichment_cache = {}  # name -> {data, timestamp}
+        self._search_cache = {}  # name -> {results, timestamp}
 
     async def enrich(self, chunks: list[DocumentChunk]) -> tuple[list[EnrichedEntity], list[ExtractedRelationship]]:
         """Enrich chunks with web search results, batch LLM descriptions, and relationships."""
@@ -756,6 +759,38 @@ class EnrichmentPipeline:
         steps = await self._extract_steps(chunks)
 
         return enriched, relationships, steps
+    
+    def _get_cached_search(self, entity_name: str) -> list | None:
+        """Get cached search results if still fresh."""
+        import time
+        cached = self._search_cache.get(entity_name.lower())
+        if cached and (time.time() - cached["timestamp"]) < self.CACHE_TTL:
+            return cached["results"]
+        return None
+    
+    def _cache_search(self, entity_name: str, results: list):
+        """Cache search results with timestamp."""
+        import time
+        self._search_cache[entity_name.lower()] = {
+            "results": results,
+            "timestamp": time.time(),
+        }
+    
+    def _get_cached_enrichment(self, entity_name: str) -> dict | None:
+        """Get cached enrichment data if still fresh."""
+        import time
+        cached = self._enrichment_cache.get(entity_name.lower())
+        if cached and (time.time() - cached["timestamp"]) < self.CACHE_TTL:
+            return cached["data"]
+        return None
+    
+    def _cache_enrichment(self, entity_name: str, data: dict):
+        """Cache enrichment data with timestamp."""
+        import time
+        self._enrichment_cache[entity_name.lower()] = {
+            "data": data,
+            "timestamp": time.time(),
+        }
 
     async def _extract_steps(self, chunks: list[DocumentChunk]) -> list[str]:
         """Extract step-by-step instructions from video transcript/OCR."""
@@ -1080,18 +1115,29 @@ class EnrichmentPipeline:
         return url_entities
 
     async def _search_entities_concurrent(self, entity_map):
-        """Phase 2: Concurrent web search per entity."""
+        """Phase 2: Concurrent web search per entity (with caching)."""
         semaphore = asyncio.Semaphore(5)
 
         async def _search_one(entity_data: dict) -> dict:
             async with semaphore:
                 name = entity_data["name"]
                 entity_type = entity_data["type"]
+                
+                # Check cache first
+                cached = self._get_cached_search(name)
+                if cached is not None:
+                    return {
+                        **entity_data,
+                        "search_results": cached,
+                        "alternatives": [],
+                    }
+                
                 try:
                     search_results = await self.searcher.search_entity(
                         name, entity_type
                     )
-                    # Skip alternatives search - not needed for output
+                    # Cache the results
+                    self._cache_search(name, search_results)
                     return {
                         **entity_data,
                         "search_results": search_results,
