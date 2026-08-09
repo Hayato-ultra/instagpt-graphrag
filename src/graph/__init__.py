@@ -1,9 +1,9 @@
-from src.graph.graph_store import GraphStore, MergeResult
+from src.graph.base import GraphStore, MergeResult
 from src.graph.neo4j_graph_store import Neo4jGraphStore, create_graph_store
 
 __all__ = [
     "GraphStore",
+    "MergeResult",
     "Neo4jGraphStore",
     "create_graph_store",
-    "MergeResult",
 ]

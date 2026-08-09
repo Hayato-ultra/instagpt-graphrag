@@ -2,37 +2,29 @@ import asyncio
 import json
 import os
 from typing import List, Dict, Any, Optional, Set, Tuple
-from dataclasses import dataclass
 from datetime import datetime
 from uuid import uuid4
 
 from neo4j import AsyncGraphDatabase, AsyncDriver
-from openai import AsyncOpenAI
 
 from src.config import get_settings
 from src.config.models import CategorizedItem, EnrichedEntity, EntityType, ContentType, ExtractedRelationship
 from src.vector import VectorStore
-from src.enrichment.llm_client import LLMClient
+from src.graph.base import GraphStore, MergeResult
 from loguru import logger
 
 
 settings = get_settings()
 
 
-@dataclass
-class MergeResult:
-    new_nodes: int = 0
-    updated_nodes: int = 0
-    merged_edges: int = 0
-    errors: List[str] = None
+class Neo4jGraphStore(GraphStore):
+    """Neo4j-backed knowledge graph with vector similarity via Qdrant.
     
-    def __post_init__(self):
-        if self.errors is None:
-            self.errors = []
-
-
-class Neo4jGraphStore:
-    """Neo4j-backed neural graph store with vector similarity via Qdrant."""
+    Architecture:
+    - Neo4j: entity nodes, topic hierarchy, relationships (graph traversal)
+    - Qdrant: vector embeddings, semantic similarity search (vector authority)
+    - PostgreSQL: application state, sources, content metadata (managed by API layer)
+    """
     
     def __init__(self):
         self.driver: Optional[AsyncDriver] = None
@@ -77,7 +69,10 @@ class Neo4jGraphStore:
             await self.driver.close()
     
     async def _create_schema(self):
-        """Create constraints and indexes for performance."""
+        """Create constraints and indexes for performance.
+        
+        Neo4j stores graph structure only. Vectors are in Qdrant.
+        """
         queries = [
             # Unique constraints
             "CREATE CONSTRAINT entity_name IF NOT EXISTS FOR (e:Entity) REQUIRE e.name IS UNIQUE",
@@ -89,9 +84,6 @@ class Neo4jGraphStore:
             "CREATE INDEX entity_topic IF NOT EXISTS FOR (e:Entity) ON (e.topic)",
             "CREATE INDEX entity_updated IF NOT EXISTS FOR (e:Entity) ON (e.updated_at)",
             "CREATE INDEX episodic_timestamp IF NOT EXISTS FOR (ep:EpisodicMemory) ON (ep.timestamp)",
-            
-            # Vector index for embeddings (Neo4j 5.11+)
-            "CREATE VECTOR INDEX entity_embedding IF NOT EXISTS FOR (e:Entity) ON (e.embedding) OPTIONS {indexConfig: {`vector.dimensions`: 1536, `vector.similarity_function`: 'cosine'}}",
             
             # Fulltext search index for entity search
             "CREATE FULLTEXT INDEX entity_search IF NOT EXISTS FOR (e:Entity) ON EACH [e.name, e.description, e.summary]",
@@ -158,38 +150,27 @@ class Neo4jGraphStore:
         topic_name = item.primary_topic.value
         subtopic_name = item.sub_topics[0] if item.sub_topics else None
         
-        # Generate embedding for similarity check (always needed for new nodes)
-        if self.embedder:
-            embedding = await self.embedder.embed_single(
-                f"{entity.name} {entity.description}"
-            )
-        else:
-            embedding = [0.0] * settings.OPENAI_EMBEDDING_DIM
+        # Generate embedding for similarity check
+        if not self.embedder:
+            raise RuntimeError("Embedder not set — cannot generate entity embeddings")
+        
+        embedding = await self.embedder.embed_single(
+            f"{entity.name} {entity.type.value} {entity.description}"
+        )
         
         # Priority 1: Exact name match (case-insensitive)
         name_match = await self._find_by_name(session, entity.name)
         if name_match:
-            existing_topic = name_match.get("topic")
-            existing_subtopic = name_match.get("sub_topic")
-            
-            if existing_topic == topic_name and existing_subtopic == subtopic_name:
-                # SAME entity + SAME topic → MERGE into existing
-                existing_payload = {
-                    "id": name_match["id"],
-                    "node_id": name_match["id"],
-                    "qdrant_id": name_match.get("qdrant_id"),
-                    "description": name_match.get("description", ""),
-                }
-                await self._merge_into_existing(session, name_match["id"], item, existing_payload)
-                result.updated_nodes += 1
-                return result
-            else:
-                # SAME entity + DIFFERENT topic → NEW node (different context)
-                new_node_id = await self._create_entity_node(session, item, embedding)
-                result.new_nodes += 1
-                # Ensure topic hierarchy
-                await self._ensure_topic_hierarchy(session, item)
-                return result
+            # Entity already exists - always merge into it (unique constraint on name)
+            existing_payload = {
+                "id": name_match["id"],
+                "node_id": name_match["id"],
+                "qdrant_id": name_match.get("qdrant_id"),
+                "description": name_match.get("description", ""),
+            }
+            await self._merge_into_existing(session, name_match["id"], item, existing_payload)
+            result.updated_nodes += 1
+            return result
         
         # Priority 2: Embedding similarity (fuzzy match)
         similar = self.vector_store.search_similar(
@@ -258,7 +239,7 @@ class Neo4jGraphStore:
         node_id = f"entity-{entity.name.lower().replace(' ', '-')}-{uuid4().hex[:8]}"
         qdrant_id = str(uuid4())
         
-        # Build properties
+        # Build properties — vectors live in Qdrant, not Neo4j
         props = {
             "id": node_id,
             "qdrant_id": qdrant_id,
@@ -279,7 +260,6 @@ class Neo4jGraphStore:
             "version": 1,
             "created_at": datetime.utcnow().isoformat(),
             "updated_at": datetime.utcnow().isoformat(),
-            "embedding": embedding
         }
         
         # Remove None values

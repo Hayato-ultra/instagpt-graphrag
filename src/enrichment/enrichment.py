@@ -88,6 +88,16 @@ class EntityDetector:
         else:
             self.MIN_ENTITY_LENGTH = 3
 
+        # OCR misread corrections - apply to ALL entity detection
+        self._ocr_corrections = {
+            "animprops.com": "AnimWorkKes",
+            "agora.com": "Agora.com",
+            "gumroad.com": "Gumroad.com",
+            "ora.com": "Agora.com",
+            "animworks.com": "AnimWorkKes",
+            "animprops": "AnimWorkKes",
+        }
+        
         # Build word-boundary regex for known entities
         self._KNOWN_ENTITY_PATTERN = re.compile(
             r"\b(" + "|".join(
@@ -259,7 +269,11 @@ class EntityDetector:
     def detect(self, text: str, max_entities: int = 40) -> list[dict[str, Any]]:
         """Detect tech entities in text."""
         detected = []
-        text_lower = text.lower()
+        
+        # Strip Instagram hashtags (#word) before entity detection to avoid false positives
+        # e.g., "#blender #maya" should not detect "blender" as entity if video is about Maya
+        cleaned_text = re.sub(r'#\w+', '', text)
+        text_lower = cleaned_text.lower()
 
         # Pattern-based detection
         for entity_type, patterns in self.ENTITY_PATTERNS.items():
@@ -267,6 +281,8 @@ class EntityDetector:
                 matches = list(re.finditer(pattern, text_lower, re.IGNORECASE))
                 for match in matches:
                     matched_text = match.group(0).strip()
+                    # Apply OCR corrections
+                    matched_text = self._ocr_corrections.get(matched_text.lower(), matched_text)
                     if not self._is_valid(matched_text):
                         continue
                     context = text[max(0, match.start()-150):match.end()+150]
@@ -278,8 +294,10 @@ class EntityDetector:
                     })
 
         # Boost known entities using word-boundary regex
-        for m in self._KNOWN_ENTITY_PATTERN.finditer(text):
+        for m in self._KNOWN_ENTITY_PATTERN.finditer(cleaned_text):
             entity_name = m.group(0)
+            # Apply OCR corrections
+            entity_name = self._ocr_corrections.get(entity_name.lower(), entity_name)
             if not self._is_valid(entity_name):
                 continue
             already_detected = any(

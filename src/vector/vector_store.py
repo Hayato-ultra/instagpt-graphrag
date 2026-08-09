@@ -91,14 +91,18 @@ class Embedder:
         raise Exception("All embedding providers failed")
     
     def _adjust_dimensions(self, embedding: List[float]) -> List[float]:
-        """Adjust embedding to match expected dimensions."""
-        if len(embedding) == self.dimensions:
-            return embedding
-        elif len(embedding) > self.dimensions:
-            return embedding[:self.dimensions]
-        else:
-            # Pad with zeros
-            return embedding + [0.0] * (self.dimensions - len(embedding))
+        """No-op — never pad or truncate embeddings.
+        
+        Each embedding provider returns its native dimension:
+        - OpenAI text-embedding-3-small: 1536
+        - NVIDIA nv-embedqa-e5-v5: 1024
+        - Google gemini-embedding-001: 768
+        
+        Padding with zeros makes vectors mathematically incomparable.
+        Instead, use separate Qdrant collections per embedding model,
+        or stick to one provider consistently.
+        """
+        return embedding
 
     async def embed_single(self, text: str) -> List[float]:
         """Embed a single text."""
@@ -178,13 +182,36 @@ class VectorStore:
         
         return len(points)
 
-    def upsert_entities(self, entities: List[EnrichedEntity]) -> int:
-        """Upsert enriched entities."""
+    async def upsert_entities(self, entities: List[EnrichedEntity], embedder=None) -> int:
+        """Upsert enriched entities with real embeddings.
+        
+        Embedding is generated from canonical entity representation:
+        name + type + description (not padded placeholders).
+        """
+        if not entities:
+            return 0
+            
+        # Generate embeddings for all entities
+        texts = [
+            f"{e.name} {e.type.value} {e.description}"
+            for e in entities
+        ]
+        
+        if embedder:
+            try:
+                embeddings = await embedder.embed_texts(texts)
+            except Exception as e:
+                logger.error(f"Failed to embed entities: {e}")
+                return 0
+        else:
+            logger.warning("No embedder provided, cannot upsert entities")
+            return 0
+        
         points = []
-        for entity in entities:
+        for entity, embedding in zip(entities, embeddings):
             points.append(PointStruct(
                 id=f"entity-{entity.name}-{uuid4().hex[:8]}",
-                vector=[0.0] * settings.OPENAI_EMBEDDING_DIM,  # placeholder
+                vector=embedding,
                 payload={
                     "name": entity.name,
                     "type": entity.type.value,

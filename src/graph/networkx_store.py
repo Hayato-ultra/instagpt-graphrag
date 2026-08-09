@@ -1,35 +1,31 @@
+"""NetworkX-based graph store — TEST ONLY.
+
+This implementation uses in-memory NetworkX for lightweight testing
+without external dependencies (Neo4j, Qdrant). Not for production use.
+
+Production: Use Neo4jGraphStore (Neo4j + Qdrant).
+"""
+
 import asyncio
 import json
 from typing import List, Dict, Any, Optional, Set, Tuple
-from dataclasses import dataclass
 from datetime import datetime
 from uuid import uuid4
 
 import networkx as nx
-from openai import AsyncOpenAI
 
 from src.config import get_settings
 from src.config.models import CategorizedItem, EnrichedEntity, EntityType, ContentType, ExtractedRelationship
 from src.vector import VectorStore
+from src.graph.base import GraphStore, MergeResult
 from loguru import logger
 
 
 settings = get_settings()
 
 
-@dataclass
-class MergeResult:
-    new_nodes: int = 0
-    updated_nodes: int = 0
-    merged_edges: int = 0
-    errors: List[str] = None
-    
-    def __post_init__(self):
-        if self.errors is None:
-            self.errors = []
-
-
-class GraphStore:
+class NetworkXStore(GraphStore):
+    """In-memory NetworkX graph store for testing only."""
     def __init__(self):
         self.graph = nx.MultiDiGraph()
         self.vector_store = VectorStore()
