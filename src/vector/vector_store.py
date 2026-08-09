@@ -1,5 +1,7 @@
 import asyncio
 from typing import List, Optional, Dict, Any
+from dataclasses import dataclass
+from enum import Enum
 from uuid import uuid4
 
 import openai
@@ -13,6 +15,37 @@ from loguru import logger
 
 
 settings = get_settings()
+
+
+class EmbeddingProvider(str, Enum):
+    """Supported embedding providers."""
+    OPENAI = "openai"
+    NVIDIA = "nvidia"
+    GOOGLE = "google"
+
+
+@dataclass
+class EmbeddingConfig:
+    """Configuration for an embedding model."""
+    provider: EmbeddingProvider
+    model: str
+    dimensions: int
+    max_batch_size: int = 2048
+    cost_per_1k_tokens: float = 0.0
+
+
+# Embedding model registry
+EMBEDDING_MODELS = {
+    # OpenAI
+    "text-embedding-3-small": EmbeddingConfig(EmbeddingProvider.OPENAI, "text-embedding-3-small", 1536, 2048, 0.00002),
+    "text-embedding-3-large": EmbeddingConfig(EmbeddingProvider.OPENAI, "text-embedding-3-large", 3072, 2048, 0.00013),
+    "text-embedding-ada-002": EmbeddingConfig(EmbeddingProvider.OPENAI, "text-embedding-ada-002", 1536, 2048, 0.0001),
+    # NVIDIA
+    "nvidia/nv-embedqa-e5-v5": EmbeddingConfig(EmbeddingProvider.NVIDIA, "nvidia/nv-embedqa-e5-v5", 1024, 512, 0.0),
+    "nvidia/nv-embed-v1": EmbeddingConfig(EmbeddingProvider.NVIDIA, "nvidia/nv-embed-v1", 4096, 512, 0.0),
+    # Google
+    "gemini-embedding-001": EmbeddingConfig(EmbeddingProvider.GOOGLE, "gemini-embedding-001", 768, 2048, 0.0),
+}
 
 
 class Embedder:

@@ -1,6 +1,7 @@
 import asyncio
 import json
 import re
+from pathlib import Path
 
 from loguru import logger
 
@@ -16,76 +17,78 @@ from src.enrichment import LLMClient
 
 settings = get_settings()
 
+# Path to taxonomy config
+TAXONOMY_PATH = Path(__file__).parent.parent.parent / "config" / "taxonomy.json"
 
-# Topic taxonomy with subtopics
-TOPIC_TAXONOMY = {
-    TopicCategory.FRONTEND: [
-        "react", "vue", "svelte", "angular", "next.js", "nuxt", "astro", "remix",
-        "state-management", "css", "styling", "ui-components", "animations",
-        "testing", "performance", "accessibility", "ssr", "ssg", "pwa"
-    ],
-    TopicCategory.BACKEND: [
-        "api-design", "rest", "graphql", "grpc", "microservices", "auth",
-        "caching", "database", "orm", "migrations", "background-jobs",
-        "message-queues", "websockets", "serverless", "edge-functions"
-    ],
-    TopicCategory.DEVOPS: [
-        "ci-cd", "github-actions", "gitlab-ci", "docker", "kubernetes",
-        "terraform", "ansible", "monitoring", "logging", "observability",
-        "deployment", "infrastructure", "cloud", "serverless"
-    ],
-    TopicCategory.AI_ML: [
-        "rag", "embeddings", "vector-search", "fine-tuning", "llm-agents",
-        "prompt-engineering", "eval", "retrieval", "reranking", "chunking",
-        "langchain", "llamaindex", "haystack", "mlops", "model-serving"
-    ],
-    TopicCategory.DATABASE: [
-        "postgresql", "mysql", "mongodb", "redis", "sqlite", "planetscale",
-        "prisma", "drizzle", "sqlalchemy", "migrations", "optimization",
-        "indexing", "sharding", "replication", "backup"
-    ],
-    TopicCategory.SECURITY: [
-        "auth", "authorization", "oauth", "jwt", "encryption", "https",
-        "cors", "csp", "xss", "csrf", "sql-injection", "secrets",
-        "vulnerability", "penetration-testing", "compliance"
-    ],
-    TopicCategory.TESTING: [
-        "unit-testing", "integration-testing", "e2e-testing", "playwright",
-        "cypress", "jest", "vitest", "pytest", "mocking", "tdd",
-        "coverage", "property-testing", "contract-testing"
-    ],
-    TopicCategory.ARCHITECTURE: [
-        "clean-architecture", "ddd", "hexagonal", "microservices", "modular-monolith",
-        "event-driven", "cqrs", "event-sourcing", "design-patterns",
-        "scalability", "maintainability", "technical-debt"
-    ],
-    TopicCategory.PERFORMANCE: [
-        "optimization", "profiling", "caching", "lazy-loading", "bundle-size",
-        "core-web-vitals", "database-optimization", "query-optimization",
-        "cdn", "compression", "memory-leaks"
-    ],
-    TopicCategory.MOBILE: [
-        "react-native", "flutter", "expo", "ios", "android", "pwa",
-        "capacitor", "native-modules", "offline-first", "push-notifications"
-    ],
-    TopicCategory.CLOUD: [
-        "aws", "gcp", "azure", "serverless", "functions", "containers",
-        "managed-services", "cost-optimization", "multi-cloud", "edge"
-    ],
-}
 
-CONTENT_TYPE_DEFINITIONS = {
-    ContentType.TUTORIAL: "Step-by-step guide teaching how to do something",
-    ContentType.BEST_PRACTICE: "Recommended patterns and practices",
-    ContentType.BUG_FIX: "Solution to a specific bug or issue",
-    ContentType.TIP: "Quick useful tip or trick",
-    ContentType.COMPARISON: "Comparison between tools/approaches",
-    ContentType.ARCHITECTURE_DECISION: "Architectural choice with rationale",
-    ContentType.TOOL_REVIEW: "Review or analysis of a tool/service",
-    ContentType.MIGRATION_GUIDE: "Guide for migrating between versions/tools",
-    ContentType.DOCUMENTATION: "Official or reference documentation",
-    ContentType.BLOG_POST: "Article or blog post about a topic",
-}
+def _load_taxonomy() -> tuple[dict, dict]:
+    """Load taxonomy from config file, falling back to defaults."""
+    if TAXONOMY_PATH.exists():
+        try:
+            with open(TAXONOMY_PATH, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            
+            # Convert to enum-keyed dicts
+            topic_taxonomy = {}
+            for topic_key, topic_data in data.get("topics", {}).items():
+                try:
+                    enum_key = TopicCategory(topic_key)
+                    topic_taxonomy[enum_key] = topic_data.get("subtopics", [])
+                except ValueError:
+                    logger.warning(f"Unknown topic category: {topic_key}")
+            
+            content_types = {}
+            for ct_key, ct_desc in data.get("content_types", {}).items():
+                try:
+                    enum_key = ContentType(ct_key)
+                    content_types[enum_key] = ct_desc
+                except ValueError:
+                    logger.warning(f"Unknown content type: {ct_key}")
+            
+            return topic_taxonomy, content_types
+        except Exception as e:
+            logger.warning(f"Failed to load taxonomy from {TAXONOMY_PATH}: {e}")
+    
+    # Fallback to hardcoded defaults
+    return _default_topic_taxonomy(), _default_content_types()
+
+
+def _default_topic_taxonomy() -> dict:
+    """Default topic taxonomy."""
+    return {
+        TopicCategory.FRONTEND: ["react", "vue", "svelte", "angular", "next.js"],
+        TopicCategory.BACKEND: ["api-design", "rest", "graphql", "microservices"],
+        TopicCategory.DEVOPS: ["ci-cd", "docker", "kubernetes", "monitoring"],
+        TopicCategory.AI_ML: ["rag", "embeddings", "llm-agents", "prompt-engineering"],
+        TopicCategory.DATABASE: ["postgresql", "mysql", "mongodb", "redis"],
+        TopicCategory.SECURITY: ["auth", "oauth", "jwt", "encryption"],
+        TopicCategory.TESTING: ["unit-testing", "integration-testing", "e2e-testing"],
+        TopicCategory.ARCHITECTURE: ["clean-architecture", "microservices", "design-patterns"],
+        TopicCategory.PERFORMANCE: ["optimization", "caching", "profiling"],
+        TopicCategory.MOBILE: ["react-native", "flutter", "expo"],
+        TopicCategory.CLOUD: ["aws", "gcp", "azure", "serverless"],
+        TopicCategory.OTHER: ["uncategorized"],
+    }
+
+
+def _default_content_types() -> dict:
+    """Default content type definitions."""
+    return {
+        ContentType.TUTORIAL: "Step-by-step guide teaching how to do something",
+        ContentType.BEST_PRACTICE: "Recommended patterns and practices",
+        ContentType.BUG_FIX: "Solution to a specific bug or issue",
+        ContentType.TIP: "Quick useful tip or trick",
+        ContentType.COMPARISON: "Comparison between tools/approaches",
+        ContentType.ARCHITECTURE_DECISION: "Architectural choice with rationale",
+        ContentType.TOOL_REVIEW: "Review or analysis of a tool/service",
+        ContentType.MIGRATION_GUIDE: "Guide for migrating between versions/tools",
+        ContentType.DOCUMENTATION: "Official or reference documentation",
+        ContentType.BLOG_POST: "Article or blog post about a topic",
+    }
+
+
+# Load at module level
+TOPIC_TAXONOMY, CONTENT_TYPE_DEFINITIONS = _load_taxonomy()
 
 
 class Categorizer:

@@ -2,6 +2,7 @@ import asyncio
 import json
 import hashlib
 import re
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional, Dict, Any
 from urllib.parse import urlparse
@@ -31,6 +32,26 @@ class ExtractionStrategy:
     TRAFILATURA = "trafilatura"
     READABILITY = "readability"
     INSTAGRAM_COOKIES = "instagram_cookies"
+    INSTAGRAM_METADATA = "instagram_metadata"
+    INSTAGRAM_VIDEO_FRAMES = "instagram_video_frames"
+    INSTAGRAM_OCR = "instagram_ocr"
+    INSTAGRAM_AUDIO = "instagram_audio"
+
+
+@dataclass
+class ExtractionResult:
+    """Result of content extraction with provenance."""
+    content: Optional[ExtractedContent] = None
+    strategy_used: str = ""
+    confidence: float = 0.0
+    warnings: List[str] = None
+    methods_attempted: List[str] = None
+    
+    def __post_init__(self):
+        if self.warnings is None:
+            self.warnings = []
+        if self.methods_attempted is None:
+            self.methods_attempted = []
 
 
 class ContentExtractor:

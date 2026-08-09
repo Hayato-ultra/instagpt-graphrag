@@ -571,3 +571,55 @@ class CRUDOperations:
             "relationship_count": relationship_count,
             "job_count": job_count,
         }
+    
+    async def consolidate_episodic_memories(
+        self,
+        entity_id: str,
+        max_memories: int = 50,
+        keep_recent: int = 10,
+    ) -> int:
+        """Consolidate old episodic memories for an entity.
+        
+        Keeps the most recent `keep_recent` memories and consolidates
+        the rest into a single summary if total exceeds `max_memories`.
+        
+        Returns number of memories deleted.
+        """
+        from src.database.models import EpisodicMemory
+        
+        # Get all memories for this entity, ordered by timestamp
+        result = await self.session.execute(
+            select(EpisodicMemory)
+            .where(EpisodicMemory.entity_id == entity_id)
+            .order_by(EpisodicMemory.timestamp.desc())
+        )
+        memories = result.scalars().all()
+        
+        if len(memories) <= max_memories:
+            return 0
+        
+        # Keep recent memories, delete old ones
+        to_delete = memories[keep_recent:]
+        for memory in to_delete:
+            await self.session.delete(memory)
+        
+        await self.session.flush()
+        return len(to_delete)
+    
+    async def cleanup_stale_memories(self, max_age_days: int = 90) -> int:
+        """Delete episodic memories older than max_age_days."""
+        from src.database.models import EpisodicMemory
+        from datetime import timedelta
+        
+        cutoff = datetime.utcnow() - timedelta(days=max_age_days)
+        result = await self.session.execute(
+            select(EpisodicMemory)
+            .where(EpisodicMemory.timestamp < cutoff)
+        )
+        stale = result.scalars().all()
+        
+        for memory in stale:
+            await self.session.delete(memory)
+        
+        await self.session.flush()
+        return len(stale)

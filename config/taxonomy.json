@@ -1,0 +1,106 @@
+{
+  "topics": {
+    "frontend": {
+      "label": "Frontend",
+      "subtopics": [
+        "react", "vue", "svelte", "angular", "next.js", "nuxt", "astro", "remix",
+        "state-management", "css", "styling", "ui-components", "animations",
+        "testing", "performance", "accessibility", "ssr", "ssg", "pwa"
+      ]
+    },
+    "backend": {
+      "label": "Backend",
+      "subtopics": [
+        "api-design", "rest", "graphql", "grpc", "microservices", "auth",
+        "caching", "database", "orm", "migrations", "background-jobs",
+        "message-queues", "websockets", "serverless", "edge-functions"
+      ]
+    },
+    "devops": {
+      "label": "DevOps",
+      "subtopics": [
+        "ci-cd", "github-actions", "gitlab-ci", "docker", "kubernetes",
+        "terraform", "ansible", "monitoring", "logging", "observability",
+        "deployment", "infrastructure", "cloud", "serverless"
+      ]
+    },
+    "ai_ml": {
+      "label": "AI/ML",
+      "subtopics": [
+        "rag", "embeddings", "vector-search", "fine-tuning", "llm-agents",
+        "prompt-engineering", "eval", "retrieval", "reranking", "chunking",
+        "langchain", "llamaindex", "haystack", "mlops", "model-serving"
+      ]
+    },
+    "database": {
+      "label": "Database",
+      "subtopics": [
+        "postgresql", "mysql", "mongodb", "redis", "sqlite", "planetscale",
+        "prisma", "drizzle", "sqlalchemy", "migrations", "optimization",
+        "indexing", "sharding", "replication", "backup"
+      ]
+    },
+    "security": {
+      "label": "Security",
+      "subtopics": [
+        "auth", "authorization", "oauth", "jwt", "encryption", "https",
+        "cors", "csp", "xss", "csrf", "sql-injection", "secrets",
+        "vulnerability", "penetration-testing", "compliance"
+      ]
+    },
+    "testing": {
+      "label": "Testing",
+      "subtopics": [
+        "unit-testing", "integration-testing", "e2e-testing", "playwright",
+        "cypress", "jest", "vitest", "pytest", "mocking", "tdd",
+        "coverage", "property-testing", "contract-testing"
+      ]
+    },
+    "architecture": {
+      "label": "Architecture",
+      "subtopics": [
+        "clean-architecture", "ddd", "hexagonal", "microservices", "modular-monolith",
+        "event-driven", "cqrs", "event-sourcing", "design-patterns",
+        "scalability", "maintainability", "technical-debt"
+      ]
+    },
+    "performance": {
+      "label": "Performance",
+      "subtopics": [
+        "optimization", "profiling", "caching", "lazy-loading", "bundle-size",
+        "core-web-vitals", "database-optimization", "query-optimization",
+        "cdn", "compression", "memory-leaks"
+      ]
+    },
+    "mobile": {
+      "label": "Mobile",
+      "subtopics": [
+        "react-native", "flutter", "expo", "ios", "android", "pwa",
+        "capacitor", "native-modules", "offline-first", "push-notifications"
+      ]
+    },
+    "cloud": {
+      "label": "Cloud",
+      "subtopics": [
+        "aws", "gcp", "azure", "serverless", "functions", "containers",
+        "managed-services", "cost-optimization", "multi-cloud", "edge"
+      ]
+    },
+    "other": {
+      "label": "Other",
+      "subtopics": ["uncategorized"]
+    }
+  },
+  "content_types": {
+    "tutorial": "Step-by-step guide teaching how to do something",
+    "best_practice": "Recommended patterns and practices",
+    "bug_fix": "Solution to a specific bug or issue",
+    "tip": "Quick useful tip or trick",
+    "comparison": "Comparison between tools/approaches",
+    "architecture_decision": "Architectural choice with rationale",
+    "tool_review": "Review or analysis of a tool/service",
+    "migration_guide": "Guide for migrating between versions/tools",
+    "documentation": "Official or reference documentation",
+    "blog_post": "Article or blog post about a topic"
+  }
+}
