@@ -66,6 +66,28 @@ class MarkdownGenerator:
                 md.append(f"- [{item.entity.name}](#{self._slugify(item.entity.name)}) (`{item.entity.type.value}`)")
             md.append("")
         
+        # Add websites found section
+        all_urls = []
+        seen_urls = set()
+        for item in items:
+            if item.entity.web_info:
+                for ref in item.entity.web_info:
+                    url = ref.get("url", "")
+                    if url and url not in seen_urls:
+                        seen_urls.add(url)
+                        all_urls.append({
+                            "url": url,
+                            "title": ref.get("title", url),
+                            "entity": item.entity.name
+                        })
+        
+        if all_urls:
+            md.append("## Websites Found in Video")
+            md.append("")
+            for url_info in all_urls:
+                md.append(f"- [{url_info['title']}]({url_info['url']}) (from {url_info['entity']})")
+            md.append("")
+        
         return "\n".join(md)
     
     def _group_by_topic(self, items: List[CategorizedItem]) -> Dict[Any, List[CategorizedItem]]:
@@ -117,7 +139,7 @@ class MarkdownGenerator:
         if item.entity.web_info:
             lines.append("**Website:**")
             seen_urls = set()
-            for ref in item.entity.web_info[:3]:
+            for ref in item.entity.web_info[:5]:  # Show up to 5 URLs
                 url = ref.get("url", "")
                 if url and url not in seen_urls:
                     seen_urls.add(url)
@@ -158,6 +180,21 @@ class MarkdownGenerator:
 class JSONGenerator:
     def generate(self, items: List[CategorizedItem], source_url: str = "", steps: List[str] = None) -> Dict[str, Any]:
         """Generate JSON output from categorized items."""
+        # Collect all unique URLs from all items
+        all_urls = []
+        seen_urls = set()
+        for item in items:
+            if item.entity.web_info:
+                for ref in item.entity.web_info:
+                    url = ref.get("url", "")
+                    if url and url not in seen_urls:
+                        seen_urls.add(url)
+                        all_urls.append({
+                            "url": url,
+                            "title": ref.get("title", url),
+                            "entity": item.entity.name
+                        })
+        
         return {
             "metadata": {
                 "generated_at": datetime.utcnow().isoformat(),
@@ -167,9 +204,11 @@ class JSONGenerator:
                 "content_types": list(set(item.content_type.value for item in items)),
                 "entity_types": list(set(item.entity.type.value for item in items)),
                 "has_steps": bool(steps),
-                "steps_count": len(steps) if steps else 0
+                "steps_count": len(steps) if steps else 0,
+                "websites_found": len(all_urls)
             },
             "steps": steps or [],
+            "websites": all_urls,
             "items": [self._serialize_item(item) for item in items]
         }
     

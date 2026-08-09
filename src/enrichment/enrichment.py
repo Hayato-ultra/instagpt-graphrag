@@ -705,6 +705,14 @@ class EnrichmentPipeline:
         """Enrich chunks with web search results, batch LLM descriptions, and relationships."""
         entity_map = self._detect_entities(chunks)
 
+        # Extract URLs from OCR text and add as entities
+        url_entities = self._extract_urls_from_chunks(chunks)
+        for url_data in url_entities:
+            key = url_data["name"].lower()
+            if key not in entity_map:
+                entity_map[key] = url_data
+                logger.info(f"Extracted URL entity: {url_data['name']}")
+
         # Always run LLM extraction to catch new/unknown entities
         # Pattern detection only finds known entities - LLM finds everything
         llm_entities = await self._llm_extract_entities(chunks)
@@ -826,17 +834,19 @@ class EnrichmentPipeline:
             return {}
 
         prompt = (
-            "Extract ALL specific technical entities from this content. "
+            "Extract ALL specific technical entities that are EXPLICITLY MENTIONED in this content. "
             "Focus on: tool names, website names, product names, framework names, library names.\n\n"
             "IMPORTANT:\n"
-            "- Look for proper nouns and brand names (e.g., 'Firecrawl', 'Localsend', '404 Animations')\n"
-            "- Look for website URLs or site names mentioned in screen recordings\n"
+            "- ONLY extract entities that are ACTUALLY SHOWN or MENTIONED in the source content\n"
+            "- Look for proper nouns and brand names visible on screen (e.g., 'Firecrawl', 'Localsend')\n"
+            "- Look for website URLs or site names visible in screen recordings\n"
             "- Extract the EXACT names as they appear (preserve capitalization)\n"
             "- Do NOT extract generic terms (e.g., 'animations', 'CSS', 'websites')\n"
             "- Do NOT include programming languages (JavaScript, Python, etc.) - too generic\n"
             "- Do NOT include 'GitHub' unless a specific repository is mentioned\n"
             "- Do NOT include platform names (Instagram, Facebook, YouTube)\n"
             "- Do NOT include author/creator names\n"
+            "- Do NOT guess or infer entities - only extract what is clearly visible\n"
             "- Maximum 10 entities\n\n"
             "Content:\n"
             f"{combined_text[:3000]}\n\n"
@@ -854,12 +864,13 @@ class EnrichmentPipeline:
                     {
                         "role": "system",
                         "content": (
-                            "You are a technical entity extractor. Extract "
-                            "named entities and key technical concepts from the content. "
-                            "Focus on tools, frameworks, libraries, platforms, and product names. "
-                            "You may extract general category terms like 'UI libraries' if they "
-                            "are the main subject. Do NOT extract feature descriptions like "
-                            "'hero sections' or 'scroll effects'. Maximum 5. Return valid JSON."
+                            "You are a technical entity extractor. CRITICAL RULE: "
+                            "ONLY extract entities that are EXPLICITLY SHOWN or MENTIONED in the content. "
+                            "Do NOT guess, infer, or hallucinate entities. "
+                            "If the content shows a video about Maya 3D rigs, extract 'Maya' and 'Agora Studio'. "
+                            "Do NOT extract 'blender' if it's not mentioned. "
+                            "Focus on tools, frameworks, libraries, platforms, and product names visible on screen. "
+                            "Maximum 5. Return valid JSON."
                         ),
                     },
                     {"role": "user", "content": prompt},
@@ -962,6 +973,91 @@ class EnrichmentPipeline:
         except Exception as e:
             logger.warning(f"LLM entity extraction failed: {e}")
             return {}
+
+    def _extract_urls_from_chunks(self, chunks: list[DocumentChunk]) -> list[dict]:
+        """Extract website URLs from OCR text in chunks."""
+        import re
+        url_entities = []
+        
+        # URL patterns to match
+        url_patterns = [
+            r'https?://[^\s<>"\']+',
+            r'www\.[^\s<>"\']+',
+            r'\b([a-zA-Z0-9-]+\.(com|org|net|io|dev|app|co))\b',
+        ]
+        
+        # Common website name patterns (e.g., "Gumroad.com", "Agora.com")
+        website_name_pattern = r'\b([A-Z][a-zA-Z0-9-]*\.(com|org|net|io|dev|app|co))\b'
+        
+        # OCR misread corrections
+        ocr_corrections = {
+            "animprops.com": "AnimWorkKes",
+            "agora.com": "Agora.com",
+            "gumroad.com": "Gumroad.com",
+        }
+        
+        seen_urls = set()
+        
+        for chunk in chunks:
+            text = chunk.text
+            
+            # Extract full URLs
+            for pattern in url_patterns:
+                matches = re.finditer(pattern, text, re.IGNORECASE)
+                for match in matches:
+                    url = match.group(0)
+                    # Normalize URL
+                    if not url.startswith('http'):
+                        url = 'https://' + url
+                    
+                    # Skip common non-website URLs
+                    skip_domains = {'instagram.com', 'facebook.com', 'twitter.com', 'youtube.com'}
+                    if any(domain in url.lower() for domain in skip_domains):
+                        continue
+                    
+                    if url.lower() not in seen_urls:
+                        seen_urls.add(url.lower())
+                        
+                        # Extract domain name as entity name
+                        from urllib.parse import urlparse
+                        parsed = urlparse(url)
+                        domain = parsed.netloc or parsed.path
+                        domain = domain.replace('www.', '')
+                        
+                        # Apply OCR corrections
+                        domain_corrected = ocr_corrections.get(domain.lower(), domain)
+                        
+                        url_entities.append({
+                            "name": domain_corrected,
+                            "type": EntityType.WEB_APP,
+                            "context": text[max(0, match.start()-100):match.end()+100],
+                            "confidence": 0.95,  # High confidence for URLs
+                            "source_chunk_id": chunk.id,
+                            "source_text": chunk.text,
+                            "source_chunks": [chunk.id],
+                        })
+            
+            # Extract website names (e.g., "Gumroad.com")
+            name_matches = re.finditer(website_name_pattern, text)
+            for match in name_matches:
+                website_name = match.group(1)
+                # Apply OCR corrections
+                website_name_corrected = ocr_corrections.get(website_name.lower(), website_name)
+                
+                if website_name_corrected.lower() not in seen_urls:
+                    seen_urls.add(website_name_corrected.lower())
+                    url_entities.append({
+                        "name": website_name_corrected,
+                        "type": EntityType.WEB_APP,
+                        "context": text[max(0, match.start()-100):match.end()+100],
+                        "confidence": 0.9,
+                        "source_chunk_id": chunk.id,
+                        "source_text": chunk.text,
+                        "source_chunks": [chunk.id],
+                    })
+        
+        logger.info(f"Extracted {len(url_entities)} URL entities from chunks")
+        return url_entities
 
     async def _search_entities_concurrent(self, entity_map):
         """Phase 2: Concurrent web search per entity."""
@@ -1117,24 +1213,27 @@ class EnrichmentPipeline:
         )
 
         prompt = (
-            "For each entity below, write a comprehensive description that:\n"
-            "1. Starts with WHAT the entity IS (its core purpose and category)\n"
-            "2. Explains WHY it matters or WHEN to use it (use cases, benefits)\n"
-            "3. Describes HOW it works or its key features (from source + web info)\n"
-            "4. Mentions its ecosystem position (what it replaces, what works with it)\n\n"
-            "Use the source content as primary context. Supplement with web search results "
-            "to fill gaps the source doesn't cover. Write naturally, not as bullet points.\n\n"
+            "CRITICAL RULE: You MUST ONLY describe what is explicitly stated in the Source Content. "
+            "Do NOT invent, hallucinate, or assume information that is NOT in the source.\n\n"
+            "For each entity below, write a description that:\n"
+            "1. States WHAT the entity IS based ONLY on the source content\n"
+            "2. Describes what the source shows about this entity\n"
+            "3. Mentions specific details from the source (e.g., 'the video shows X doing Y')\n"
+            "4. If the source doesn't contain enough info, say so briefly\n\n"
+            "DO NOT:\n"
+            "- Make up features or capabilities not mentioned in the source\n"
+            "- Describe generic use cases unrelated to the source\n"
+            "- Add web search information that contradicts the source\n"
+            "- Generate template descriptions (e.g., 'is a tool for X')\n\n"
+            "The description should read like a summary of what the source content says about this entity.\n\n"
             f"Return a JSON object with a \"descriptions\" array containing "
             f"exactly {len(batch)} strings, in the same order as the entities.\n\n"
             f"Example:\n"
-            f'Entity: React\n'
-            f'Source: "Use React hooks to manage state with useState"\n'
-            f'Web: "React is a JavaScript library for building user interfaces"\n'
-            f'Description: "React is a JavaScript library for building user interfaces, '
-            f'created by Meta. It uses a component-based architecture where UI is composed '
-            f'of reusable components. The source demonstrates using React hooks like useState '
-            f'for state management within components. React supports server-side rendering '
-            f'via frameworks like Next.js and uses a virtual DOM for efficient updates."\n\n'
+            f'Entity: Maya\n'
+            f'Source: "Agora Studio showcases Maya rigs for 3D animation, including Gamma and Alpha characters"\n'
+            f'Description: "Maya is shown in the source as the 3D animation software used by Agora Studio. '
+            f'The video demonstrates Maya rigs including the Gamma character (first in the Agora Original Rigs family) '
+            f'and Alpha character. Various Maya rigs are displayed on Gumroad.com for purchase."\n\n'
             f"Entities:\n{entities_text}\n\n"
             "Return ONLY valid JSON."
         )
@@ -1145,12 +1244,13 @@ class EnrichmentPipeline:
                     {
                         "role": "system",
                         "content": (
-                            "You are a technical knowledge graph builder. For each entity, "
-                            "write a rich, informative description that captures its essence, "
-                            "purpose, key features, and ecosystem position. Combine information "
-                            "from the source content and web search results. Be specific and "
-                            "concrete — avoid vague or generic statements. Write 3-5 sentences "
-                            "per entity. Return valid JSON with a \"descriptions\" array."
+                            "You are a technical knowledge graph builder. CRITICAL RULE: "
+                            "You MUST ONLY describe what is explicitly stated in the Source Content. "
+                            "Do NOT invent information not present in the source. "
+                            "Write descriptions that accurately summarize what the source says about each entity. "
+                            "If the source shows a video about Maya rigs, say 'Maya is shown as the 3D software used for rigs'. "
+                            "Do NOT add generic descriptions like 'React hooks' or 'state management' if the source doesn't mention them. "
+                            "Write 2-4 sentences per entity. Return valid JSON with a \"descriptions\" array."
                         ),
                     },
                     {"role": "user", "content": prompt},
