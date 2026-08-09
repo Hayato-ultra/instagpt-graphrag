@@ -69,6 +69,14 @@ Package init. Exports all public classes: `Settings`, `ContentExtractor`, `Seman
 
 ---
 
+### `src/search/`
+
+| File | Description |
+|------|-------------|
+| `__init__.py` | **HybridSearcher**: Combines vector (Qdrant), fulltext (Neo4j), and graph relationship signals with weighted reranking (0.5 vector + 0.3 fulltext + 0.2 graph). |
+
+---
+
 ### `src/graph/`
 
 | File | Description |
@@ -76,6 +84,18 @@ Package init. Exports all public classes: `Settings`, `ContentExtractor`, `Seman
 | `__init__.py` | Exports `GraphStore`, `Neo4jGraphStore`, `create_graph_store`, `MergeResult`. |
 | `graph_store.py` | **GraphStore**: NetworkX-based in-memory graph. Creates entity/topic/subtopic nodes, SIMILAR_TO edges, episodic memory nodes. Deduplicates via vector similarity search. Exports to GraphML/GEXF/JSON. Includes `consolidate_graph()` for background dedup. |
 | `neo4j_graph_store.py` | **Neo4jGraphStore**: Neo4j-backed graph with Qdrant for vector search. Creates constraints/indexes (unique names, vector index, fulltext search). Upserts entities with embedding similarity + exact name matching. Creates episodic memory nodes for updates. Topic/subtopic hierarchy with BELONGS_TO edges. |
+| `entity_resolver.py` | **EntityResolver**: Centralized entity resolution. Decides MERGE (duplicate), SIMILAR (closely related), or NEW (unique). Consumed by Neo4jGraphStore. |
+
+---
+
+### `src/database/`
+
+| File | Description |
+|------|-------------|
+| `__init__.py` | Exports `Base`, `crud` module, `init_db()`, `close_db()`, `get_async_session()`. |
+| `base.py` | SQLAlchemy declarative base for async PostgreSQL. |
+| `models.py` | 16 PostgreSQL tables: Source, Content, Entity, EntityType, Chunk, ContentEntity, Similarity, EpisodicMemory, Job, Step, Topic, Subtopic, ContentType, Categorization, JobHistory, JobError. |
+| `crud.py` | Full CRUD operations for all tables. Includes `consolidate_episodic_memories()` and `cleanup_stale_memories()`. |
 
 ---
 
@@ -94,7 +114,17 @@ Package init. Exports all public classes: `Settings`, `ContentExtractor`, `Seman
 |------|-------------|
 | `__init__.py` | Exports `MarkdownGenerator`, `JSONGenerator`, `generate_outputs`. |
 | `output_generator.py` | **MarkdownGenerator**: Produces structured markdown grouped by topic/subtopic with badges, descriptions, key points, similar tools, references, tags. **JSONGenerator**: Serializes categorized items with metadata. **generate_outputs()**: Creates both `.md` and `.json` files with timestamps. |
-| `frontend.py` | **FastAPI app**: REST API + WebSocket for real-time updates. Endpoints: `/api/process` (background job), `/api/jobs`, `/api/search`, `/api/entity`, `/api/graph/stats`, `/api/graph/export`, `/api/outputs`. Serves static HTML. |
+| ~~`frontend.py`~~ | Deleted — replaced by `src/api/routes/` module-based routing. |
+
+### `src/api/routes/`
+
+| File | Description |
+|------|-------------|
+| `__init__.py` | Exports all routers (video, graph, search, notebook). |
+| `video.py` | Video analysis endpoints: `/api/video/analyze` (POST), `/api/video/{analysis_id}` (GET), `/api/video/{content_id}` (GET). Handles background processing with stage callbacks. |
+| `graph.py` | Knowledge graph endpoints: `/api/graph/stats`, `/api/graph/entity/{name}`, `/api/graph/export`, `/api/graph/relationships/{entity_name}`. |
+| `search.py` | Hybrid search endpoint: `/api/search` — combines vector, fulltext, and graph relationship signals with weighted reranking. |
+| `notebook.py` | Notebook endpoints: `/api/notebook/export/{content_id}` (markdown), `/api/notebook/exports` (list). |
 
 ---
 
