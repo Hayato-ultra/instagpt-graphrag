@@ -19,6 +19,7 @@ from datetime import datetime
 
 from fastapi import FastAPI, HTTPException, Query, BackgroundTasks, Depends
 from fastapi.middleware.cors import CORSMiddleware
+from loguru import logger
 
 from src.config import get_settings
 from src.pipeline import KnowledgeGraphPipeline
@@ -90,7 +91,9 @@ app.include_router(notebook_router)
 
 async def process_video_task(job_id: str, url: str):
     """Background task to process video with stage tracking."""
-    async for session in get_async_session():
+    from src.database.base import _session_factory
+    
+    async with _session_factory() as session:
         db = CRUDOperations(session)
         try:
             async def update_stage(stage: str):
@@ -112,20 +115,35 @@ async def process_video_task(job_id: str, url: str):
                 entities_count = 0
                 if result.processing_result and result.processing_result.entities:
                     for entity in result.processing_result.entities:
-                        await db.create_entity(
-                            name=entity.name,
-                            entity_type=entity.type.value if hasattr(entity.type, 'value') else str(entity.type),
-                            description=entity.description,
-                            confidence=entity.confidence,
-                        )
-                        entities_count += 1
+                        try:
+                            etype_str = entity.type.value if hasattr(entity.type, 'value') else str(entity.type)
+                            existing = await db.get_entity_by_name(entity.name)
+                            if not existing:
+                                await db.create_entity(
+                                    name=entity.name,
+                                    entity_type=etype_str,
+                                    description=entity.description,
+                                    confidence=entity.confidence,
+                                )
+                                entities_count += 1
+                            else:
+                                entities_count += 1
+                        except Exception as e:
+                            logger.warning(f"Failed to create entity {entity.name}: {e}")
+                            await session.rollback()
                 
                 if content_record and result.processing_result and result.processing_result.entities:
                     for entity in result.processing_result.entities:
-                        await db.link_content_entity(
-                            content_id=content_record.id,
-                            entity_id=entity.id if hasattr(entity, 'id') else str(uuid.uuid4()),
-                        )
+                        try:
+                            existing = await db.get_entity_by_name(entity.name)
+                            if existing:
+                                await db.link_content_entity(
+                                    content_id=content_record.id,
+                                    entity_id=existing.id,
+                                )
+                        except Exception as e:
+                            logger.warning(f"Failed to link content-entity: {e}")
+                            await session.rollback()
                 
                 await db.update_job_status(
                     job_id,
@@ -140,9 +158,16 @@ async def process_video_task(job_id: str, url: str):
             else:
                 await db.update_job_status(job_id, "failed", error=result.error)
         except Exception as e:
-            await db.update_job_status(job_id, "failed", error=str(e))
+            try:
+                await db.update_job_status(job_id, "failed", error=str(e))
+            except Exception:
+                pass
         finally:
-            await session.commit()
+            try:
+                await session.commit()
+            except Exception:
+                await session.rollback()
+            await session.close()
 
 
 # --- Extra Endpoints (not in route modules) ---

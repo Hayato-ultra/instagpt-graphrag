@@ -23,7 +23,7 @@ async def analyze_video(
         raise HTTPException(status_code=400, detail="URL is required")
     
     job = await db.create_analysis_job(url=url)
-    await db.session.commit()
+    # Don't commit here — get_async_session handles commit/rollback
     
     background_tasks.add_task(process_video_task, job.id, url)
     

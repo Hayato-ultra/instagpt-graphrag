@@ -6,7 +6,11 @@ from src.database import get_async_session, CRUDOperations
 
 
 async def get_db(session: AsyncSession = Depends(get_async_session)):
-    """Dependency that yields CRUDOperations from an async session."""
+    """Dependency that yields CRUDOperations from an async session.
+    
+    The underlying get_async_session handles commit/rollback/close.
+    Routes should NOT call session.commit() directly.
+    """
     yield CRUDOperations(session)
 
 
