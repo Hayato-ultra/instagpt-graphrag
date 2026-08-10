@@ -93,18 +93,22 @@ class Embedder:
         except Exception as e:
             logger.warning(f"OpenAI embedding failed: {e}")
         
-        # Try NVIDIA (uses different model names, returns 1024 dim by default)
+        # Try NVIDIA (uses different model names, 512 token limit per input)
         if self.nvidia_client:
             try:
-                response = await self.nvidia_client.embeddings.create(
-                    model="nvidia/nv-embedqa-e5-v5",
-                    input=batch,
-                    encoding_format="float",
-                    extra_body={"input_type": "query"}
-                )
-                embeddings = [item.embedding for item in response.data]
-                # Pad or truncate to match expected dimensions
-                return [self._adjust_dimensions(e) for e in embeddings]
+                # NVIDIA has 512 token limit — split into smaller sub-batches
+                nvidia_batch_size = 10
+                all_nvidia = []
+                for j in range(0, len(batch), nvidia_batch_size):
+                    sub = batch[j:j + nvidia_batch_size]
+                    response = await self.nvidia_client.embeddings.create(
+                        model="nvidia/nv-embedqa-e5-v5",
+                        input=sub,
+                        encoding_format="float",
+                        extra_body={"input_type": "query"}
+                    )
+                    all_nvidia.extend([item.embedding for item in response.data])
+                return [self._adjust_dimensions(e) for e in all_nvidia]
             except Exception as e:
                 logger.warning(f"NVIDIA embedding failed: {e}")
         
@@ -124,18 +128,18 @@ class Embedder:
         raise Exception("All embedding providers failed")
     
     def _adjust_dimensions(self, embedding: List[float]) -> List[float]:
-        """No-op — never pad or truncate embeddings.
+        """Adjust embedding to match the target dimension (self.dimensions).
         
-        Each embedding provider returns its native dimension:
-        - OpenAI text-embedding-3-small: 1536
-        - NVIDIA nv-embedqa-e5-v5: 1024
-        - Google gemini-embedding-001: 768
-        
-        Padding with zeros makes vectors mathematically incomparable.
-        Instead, use separate Qdrant collections per embedding model,
-        or stick to one provider consistently.
+        If provider returns more dims → truncate (loses some info but keeps most).
+        If provider returns fewer dims → zero-pad (cosine similarity still works).
         """
-        return embedding
+        target = self.dimensions
+        if len(embedding) == target:
+            return embedding
+        elif len(embedding) > target:
+            return embedding[:target]
+        else:
+            return embedding + [0.0] * (target - len(embedding))
 
     async def embed_single(self, text: str) -> List[float]:
         """Embed a single text."""
