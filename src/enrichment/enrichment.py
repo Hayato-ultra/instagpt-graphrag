@@ -721,6 +721,7 @@ class EnrichmentPipeline:
         self.llm = LLMClient()
         self._enrichment_cache = {}  # name -> {data, timestamp}
         self._search_cache = {}  # name -> {results, timestamp}
+        self._translation_cache = {}  # text hash -> translated text
 
     async def enrich(self, chunks: list[DocumentChunk]) -> tuple[list[EnrichedEntity], list[ExtractedRelationship]]:
         """Enrich chunks with web search results, batch LLM descriptions, and relationships."""
@@ -833,6 +834,9 @@ class EnrichmentPipeline:
             from src.enrichment.llm_client import LLMClient
             llm = LLMClient()
             
+            # Translate Hinglish if needed
+            all_text_translated = await self._translate_hinglish_if_needed(all_text)
+            
             result = await llm.chat_completion(
                 messages=[
                     {
@@ -852,14 +856,31 @@ class EnrichmentPipeline:
                             "Return a JSON object with a \"steps\" array of strings."
                         ),
                     },
-                    {"role": "user", "content": f"Extract the exact steps from this transcript:\n\n{all_text[:3000]}"},
+                    {"role": "user", "content": f"Extract the exact steps from this transcript:\n\n{all_text_translated[:3000]}"},
                 ],
                 temperature=0.1,
                 max_tokens=800,
             )
             
             import json
-            data = json.loads(result["content"])
+            content = result["content"].strip()
+            logger.debug(f"Step extraction raw response: {content[:500]}")
+            
+            # Robust JSON parsing
+            json_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", content, re.DOTALL)
+            if json_match:
+                content = json_match.group(1)
+            elif not content.startswith("{"):
+                brace_start = content.find("{")
+                brace_end = content.rfind("}")
+                if brace_start != -1 and brace_end != -1:
+                    content = content[brace_start:brace_end + 1]
+            
+            if not content:
+                logger.warning("Step extraction: empty response from LLM")
+                return []
+            
+            data = json.loads(content)
             steps = data.get("steps", [])
             if steps:
                 logger.info(f"Extracted {len(steps)} steps from content")
@@ -913,6 +934,9 @@ class EnrichmentPipeline:
         # Detect transcript quality for dynamic priority
         all_text = "\n".join(c.text for c in chunks)
         transcript_quality = self._detect_transcript_quality(all_text)
+
+        # Detect and translate Hindi/Hinglish transcripts
+        combined_text = await self._translate_hinglish_if_needed(combined_text)
 
         # Build priority instruction based on transcript quality
         if transcript_quality in ["music_only", "short", "empty"]:
@@ -1103,6 +1127,101 @@ class EnrichmentPipeline:
 
         return "real_content"
 
+    async def _translate_hinglish_if_needed(self, text: str) -> str:
+        """Detect Hindi/Hinglish transcripts and translate to English."""
+        # Check cache first
+        text_hash = hash(text[:500])
+        if text_hash in self._translation_cache:
+            return self._translation_cache[text_hash]
+
+        # Check if text contains Hindi/Devanagari script
+        hindi_chars = sum(1 for c in text if '\u0900' <= c <= '\u097F')
+        if hindi_chars > len(text) * 0.1:  # More than 10% Devanagari
+            try:
+                result = await self.llm.chat_completion(
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": (
+                                "Translate the following Hindi/Hinglish text to English. "
+                                "Preserve all technical terms, tool names, and commands exactly. "
+                                "Return ONLY the translated text, nothing else."
+                            ),
+                        },
+                        {"role": "user", "content": text[:3000]},
+                    ],
+                    temperature=0.1,
+                    max_tokens=1000,
+                )
+                translated = result["content"].strip()
+                if len(translated) > len(text) * 0.5:  # Sanity check
+                    logger.info(f"Translated Hindi transcript ({len(text)} -> {len(translated)} chars)")
+                    self._translation_cache[text_hash] = translated
+                    return translated
+            except Exception as e:
+                logger.warning(f"Hindi translation failed: {e}")
+
+        # Check for Romanized Hindi (Hinglish) - common patterns
+        hinglish_markers = [
+            "hai ", "hain ", "kya ", "kaise ", "mein ", "tumhe ", "pata ",
+            "hon ", "chahiye ", "yeh ", "woh ", "aur ", "lekin ", "kyunki ",
+            "ab ", "jo ", "tum ", "hum ", "aap ", "se ", "ko ", "ka ", "ki ",
+        ]
+        text_lower = text.lower()
+        hinglish_count = sum(1 for m in hinglish_markers if m in text_lower)
+        if hinglish_count >= 3:  # 3+ Hinglish markers
+            try:
+                result = await self.llm.chat_completion(
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": (
+                                "You are translating a Hinglish (Hindi written in Roman/English script) transcript to English.\n"
+                                "This is a spoken tutorial transcript - translate ALL Hindi words to English.\n"
+                                "Keep technical terms, tool names, and commands EXACTLY as they are.\n"
+                                "Common Hinglish words to translate:\n"
+                                "- 'hai/hain' = 'is/are'\n"
+                                "- 'kya' = 'what'\n"
+                                "- 'kaise' = 'how'\n"
+                                "- 'mein' = 'in/I'\n"
+                                "- 'tumhe' = 'you'\n"
+                                "- 'pata' = 'know'\n"
+                                "- 'chahiye' = 'need/should'\n"
+                                "- 'yeh' = 'this'\n"
+                                "- 'woh' = 'that'\n"
+                                "- 'aur' = 'and'\n"
+                                "- 'lekin' = 'but'\n"
+                                "- 'kyunki' = 'because'\n"
+                                "- 'ab' = 'now'\n"
+                                "- 'jo' = 'which/who'\n"
+                                "- 'tum' = 'you'\n"
+                                "- 'hum' = 'we'\n"
+                                "- 'aap' = 'you (respectful)'\n"
+                                "- 'se' = 'with/from'\n"
+                                "- 'ko' = 'to'\n"
+                                "- 'ka/ki/ke' = 'of'\n"
+                                "- 'mil' = 'get/find'\n"
+                                "- 'jaenge' = 'will go'\n"
+                                "- 'bana' = 'made'\n"
+                                "- 'hues' = 'already'\n"
+                                "Return ONLY the translated English text, nothing else."
+                            ),
+                        },
+                        {"role": "user", "content": text[:3000]},
+                    ],
+                    temperature=0.1,
+                    max_tokens=1500,
+                )
+                translated = result["content"].strip()
+                if len(translated) > len(text) * 0.5:
+                    logger.info(f"Translated Hinglish transcript ({len(text)} -> {len(translated)} chars)")
+                    self._translation_cache[text_hash] = translated
+                    return translated
+            except Exception as e:
+                logger.warning(f"Hinglish translation failed: {e}")
+
+        return text
+
     def _validate_entities_against_source(
         self, entities: list[EnrichedEntity], chunks: list[DocumentChunk]
     ) -> list[EnrichedEntity]:
@@ -1119,17 +1238,33 @@ class EnrichmentPipeline:
                 primary_text = all_text[idx:]
                 break
 
+        # Also check OCR text
+        ocr_text = ""
+        for marker in ["[Video Frame OCR]:", "[Carousel Image"]:
+            idx = all_text.find(marker)
+            if idx != -1:
+                ocr_text = all_text[idx:]
+                break
+
         validated = []
         for entity in entities:
-            if entity.name.lower() in primary_text.lower():
+            name_lower = entity.name.lower()
+            # Check if entity name appears in transcript or OCR
+            in_transcript = name_lower in primary_text.lower()
+            in_ocr = name_lower in ocr_text.lower() if ocr_text else False
+
+            if in_transcript or in_ocr:
                 entity.confidence = min(entity.confidence + 0.1, 1.0)
                 validated.append(entity)
-            elif transcript_quality == "real_content":
-                entity.confidence *= 0.3
-                if entity.confidence > 0.3:
-                    validated.append(entity)
+            elif transcript_quality in ["real_content", "no_actions"]:
+                # Strict: reject entities not found in source when we have content
+                # (no_actions means Hinglish - still has real content, just in Hindi)
+                logger.debug(f"Rejected entity '{entity.name}' - not found in transcript/OCR")
             else:
-                validated.append(entity)
+                # No good transcript - keep with reduced confidence
+                entity.confidence *= 0.5
+                if entity.confidence > 0.5:
+                    validated.append(entity)
 
         return validated
 
@@ -1438,6 +1573,7 @@ class EnrichmentPipeline:
             )
 
             content = result["content"].strip()
+            logger.debug(f"Describe batch raw response: {content[:500]}")
 
             # Try to extract JSON from response (handle markdown code blocks)
             json_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", content, re.DOTALL)
@@ -1484,7 +1620,7 @@ class EnrichmentPipeline:
             # Try to extract partial JSON before giving up
             try:
                 import re as re_module
-                raw = re_module.search(r'```json\s*\n(.*?)$', response_text, re_module.DOTALL)
+                raw = re_module.search(r'```json\s*\n(.*?)$', content, re_module.DOTALL)
                 if raw:
                     descs = re_module.findall(r'"description"\s*:\s*"([^"]*)"', raw.group(1))
                     if descs:
