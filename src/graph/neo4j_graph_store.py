@@ -12,6 +12,7 @@ from src.config.models import CategorizedItem, EnrichedEntity, EntityType, Conte
 from src.vector import VectorStore
 from src.graph.base import GraphStore, MergeResult
 from src.graph.entity_resolver import EntityResolver, Resolution
+from src.enrichment.llm_client import LLMClient
 from loguru import logger
 
 
