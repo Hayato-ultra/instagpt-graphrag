@@ -2,7 +2,8 @@
 from typing import Dict, Any
 from fastapi import APIRouter, HTTPException, Depends
 
-from src.database import CRUDOperations, get_async_session
+from src.api.routes import get_db
+from src.database import CRUDOperations
 
 
 router = APIRouter(prefix="/api/notebook", tags=["notebook"])
@@ -10,7 +11,7 @@ router = APIRouter(prefix="/api/notebook", tags=["notebook"])
 
 @router.get("/")
 async def list_notebook(
-    db: CRUDOperations = Depends(get_async_session),
+    db: CRUDOperations = Depends(get_db),
 ):
     """List notebook entries."""
     contents = await db.list_content(limit=100)
@@ -32,7 +33,7 @@ async def list_notebook(
 @router.get("/{entry_id}")
 async def get_notebook_entry(
     entry_id: str,
-    db: CRUDOperations = Depends(get_async_session),
+    db: CRUDOperations = Depends(get_db),
 ):
     """Get a single notebook entry."""
     content = await db.get_content(entry_id)

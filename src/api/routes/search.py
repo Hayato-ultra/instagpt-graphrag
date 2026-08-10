@@ -2,7 +2,8 @@
 from typing import Dict, Any
 from fastapi import APIRouter, Depends
 
-from src.database import CRUDOperations, get_async_session
+from src.api.routes import get_db
+from src.database import CRUDOperations
 
 
 router = APIRouter(prefix="/api", tags=["search"])
@@ -17,7 +18,7 @@ def get_searcher():
 @router.post("/search")
 async def search(
     request: Dict[str, Any],
-    db: CRUDOperations = Depends(get_async_session),
+    db: CRUDOperations = Depends(get_db),
 ):
     """Hybrid search combining vector, fulltext, and graph signals."""
     query = request.get("query", "")
@@ -28,7 +29,6 @@ async def search(
         results = await hybrid_searcher.search(query, limit=20)
         return {"results": results[:20], "total": len(results)}
     except Exception:
-        # Fallback to PostgreSQL search
         try:
             results = await db.search_entities(query, limit=20)
             return {

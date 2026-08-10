@@ -2,7 +2,8 @@
 from typing import Dict, Any
 from fastapi import APIRouter, HTTPException, Depends
 
-from src.database import CRUDOperations, get_async_session
+from src.api.routes import get_db
+from src.database import CRUDOperations
 
 
 router = APIRouter(prefix="/api/graph", tags=["graph"])
@@ -113,7 +114,6 @@ async def get_node_detail(node_type: str, node_id: str):
     """Get single node + related nodes."""
     store = get_graph_store()
     
-    # Get the node
     query = """
     MATCH (e:Entity)
     WHERE e.id = $node_id OR e.name = $node_id
@@ -128,8 +128,6 @@ async def get_node_detail(node_type: str, node_id: str):
         raise HTTPException(status_code=404, detail="Node not found")
     
     entity = dict(record["e"])
-    
-    # Get related nodes
     related = await store.get_related(entity["name"], limit=20)
     
     return {
@@ -147,3 +145,48 @@ async def get_node_detail(node_type: str, node_id: str):
             for r in related
         ],
     }
+
+
+@router.get("/stats")
+async def get_graph_stats():
+    """Get graph statistics."""
+    store = get_graph_store()
+    
+    stats = await store.get_stats()
+    return stats
+
+
+@router.get("/entity/{entity_name}")
+async def get_entity(entity_name: str):
+    """Get entity details."""
+    store = get_graph_store()
+    
+    entity = await store.get_entity(entity_name)
+    if not entity:
+        raise HTTPException(status_code=404, detail="Entity not found")
+    return entity
+
+
+@router.get("/export")
+async def export_graph(format: str = "json"):
+    """Export graph in various formats."""
+    store = get_graph_store()
+    
+    if format == "graphml":
+        content = await store.export_graphml()
+        return {"format": "graphml", "content": content}
+    elif format == "gexf":
+        content = await store.export_gexf()
+        return {"format": "gexf", "content": content}
+    else:
+        content = await store.export_json()
+        return {"format": "json", "content": content}
+
+
+@router.get("/relationships/{entity_name}")
+async def get_entity_relationships(entity_name: str):
+    """Get relationships for an entity."""
+    store = get_graph_store()
+    
+    related = await store.get_related(entity_name)
+    return {"entity": entity_name, "relationships": related}

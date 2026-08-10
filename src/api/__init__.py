@@ -105,8 +105,8 @@ async def process_video_task(job_id: str, url: str):
                 content_record = await db.create_content(
                     url=url,
                     title=content.title if content else "Unknown",
-                    raw_text=content.text if content else "",
-                    content_length=len(content.text) if content else 0,
+                    raw_text=content.raw_text if content else "",
+                    content_length=len(content.raw_text) if content else 0,
                 )
                 
                 entities_count = 0
@@ -114,7 +114,7 @@ async def process_video_task(job_id: str, url: str):
                     for entity in result.processing_result.entities:
                         await db.create_entity(
                             name=entity.name,
-                            entity_type=entity.entity_type,
+                            entity_type=entity.type.value if hasattr(entity.type, 'value') else str(entity.type),
                             description=entity.description,
                             confidence=entity.confidence,
                         )

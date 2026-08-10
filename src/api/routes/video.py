@@ -2,23 +2,18 @@
 from typing import Dict, Any
 from fastapi import APIRouter, HTTPException, BackgroundTasks, Depends
 
+from src.api.routes import get_db
 from src.database import CRUDOperations, get_async_session
 
 
 router = APIRouter(prefix="/api/video", tags=["video"])
 
 
-def get_pipeline():
-    """Get pipeline from app state."""
-    from src.api import pipeline
-    return pipeline
-
-
 @router.post("/analyze")
 async def analyze_video(
     request: Dict[str, str],
     background_tasks: BackgroundTasks,
-    db: CRUDOperations = Depends(get_async_session),
+    db: CRUDOperations = Depends(get_db),
 ):
     """Start analyzing a video URL."""
     from src.api import process_video_task
@@ -27,8 +22,8 @@ async def analyze_video(
     if not url:
         raise HTTPException(status_code=400, detail="URL is required")
     
-    # Create analysis job in database
     job = await db.create_analysis_job(url=url)
+    await db.session.commit()
     
     background_tasks.add_task(process_video_task, job.id, url)
     
@@ -42,7 +37,7 @@ async def analyze_video(
 @router.get("/analysis/{analysis_id}")
 async def get_analysis_status(
     analysis_id: str,
-    db: CRUDOperations = Depends(get_async_session),
+    db: CRUDOperations = Depends(get_db),
 ):
     """Get analysis status."""
     job = await db.get_job(analysis_id)
@@ -63,7 +58,7 @@ async def get_analysis_status(
 @router.get("/{content_id}")
 async def get_video(
     content_id: str,
-    db: CRUDOperations = Depends(get_async_session),
+    db: CRUDOperations = Depends(get_db),
 ):
     """Get video details."""
     content = await db.get_content(content_id)
@@ -83,7 +78,7 @@ async def get_video(
 async def list_videos(
     limit: int = 100,
     offset: int = 0,
-    db: CRUDOperations = Depends(get_async_session),
+    db: CRUDOperations = Depends(get_db),
 ):
     """List all processed videos."""
     contents = await db.list_content(limit=limit, offset=offset)

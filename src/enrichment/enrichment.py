@@ -746,7 +746,7 @@ class EnrichmentPipeline:
                     entity_map[name.lower()]["confidence"] = data["confidence"]
 
         if not entity_map:
-            return [], []
+            return [], [], []
 
         searched = await self._search_entities_concurrent(entity_map)
         descriptions = await self._generate_descriptions_batch(searched)

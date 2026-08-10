@@ -86,7 +86,11 @@ class KnowledgeGraphPipeline:
         
         async def _update_stage(stage: str):
             if stage_callback:
-                await stage_callback(stage)
+                import inspect
+                if inspect.iscoroutinefunction(stage_callback):
+                    await stage_callback(stage)
+                else:
+                    stage_callback(stage)
         
         # Idempotency check: skip if already processed (unless force=True)
         if not force:
@@ -183,7 +187,8 @@ class KnowledgeGraphPipeline:
             )
             
         except Exception as e:
-            logger.error(f"Pipeline failed for {url}: {e}")
+            import traceback
+            logger.error(f"Pipeline failed for {url}: {e}\n{traceback.format_exc()}")
             processing_time = int((time.time() - start_time) * 1000)
             
             result = ProcessingResult(

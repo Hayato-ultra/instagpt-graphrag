@@ -283,7 +283,8 @@ class Neo4jGraphStore(GraphStore):
         if embedding is not None:
             for attempt in range(3):
                 try:
-                    self.vector_store.client.upsert(
+                    await asyncio.to_thread(
+                        self.vector_store.client.upsert,
                         collection_name=settings.QDRANT_COLLECTION,
                         points=[{
                             "id": qdrant_id,
@@ -331,7 +332,7 @@ class Neo4jGraphStore(GraphStore):
         MATCH (e:Entity {id: $node_id})
         RETURN e
         """
-        record = await session.run(query, node_id=node_id).single()
+        record = await (await session.run(query, node_id=node_id)).single()
         
         if record:
             node_data = dict(record["e"])
@@ -395,7 +396,8 @@ class Neo4jGraphStore(GraphStore):
             await session.run(episodic_query, props=episodic_props, node_id=node_id)
             
             # Update Qdrant
-            self.vector_store.client.set_payload(
+            await asyncio.to_thread(
+                self.vector_store.client.set_payload,
                 collection_name=settings.QDRANT_COLLECTION,
                 payload={
                     "description": merged_desc,
@@ -563,7 +565,7 @@ class Neo4jGraphStore(GraphStore):
         RETURN e
         """
         async with self.driver.session() as session:
-            record = await session.run(query, name=name).single()
+            record = await (await session.run(query, name=name)).single()
             return dict(record["e"]) if record else None
     
     async def get_related(self, name: str, relation: str = None, limit: int = 10) -> List[Dict]:

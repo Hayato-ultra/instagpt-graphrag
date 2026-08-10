@@ -9,6 +9,7 @@ Rules:
 3. Entity connects to multiple Topics (not duplicate nodes)
 """
 
+import asyncio
 from dataclasses import dataclass
 from enum import Enum
 from typing import List, Dict, Any, Optional
@@ -86,7 +87,8 @@ class EntityResolver:
             logger.error(f"Embedding failed for entity '{name}': {e}")
             return ResolutionResult(decision=Resolution.NEW)
         
-        similar = self.vector_store.search_similar(
+        similar = await asyncio.to_thread(
+            self.vector_store.search_similar,
             query_vector=embedding,
             limit=5,
             filter_type="entity",
