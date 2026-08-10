@@ -140,6 +140,12 @@ class KnowledgeGraphPipeline:
             logger.info("Stage 5: Categorizing entities")
             categorized = await self.categorizer.categorize(entities)
             stages.append(PipelineStage.FORMAT)
+
+            # Stage 5b: Categorize carousel images (if applicable)
+            carousel_data = None
+            if extracted.content_type.value == "carousel":
+                logger.info("Stage 5b: Categorizing carousel images")
+                carousel_data = await self.categorizer.categorize_carousel_images(extracted.raw_text)
             
             # Stage 6: Generate outputs
             await _update_stage("formatting")
@@ -148,7 +154,8 @@ class KnowledgeGraphPipeline:
                 categorized, 
                 str(url), 
                 settings.OUTPUT_DIR,
-                steps=steps,  # Pass steps to output generator
+                steps=steps,
+                carousel_data=carousel_data,
             )
             
             # Stage 7: Update neural graph

@@ -1,5 +1,5 @@
 from typing import List, Dict, Any
-from datetime import datetime
+from datetime import datetime, UTC
 from pathlib import Path
 from collections import defaultdict
 
@@ -8,7 +8,13 @@ from loguru import logger
 
 
 class MarkdownGenerator:
-    def generate(self, items: List[CategorizedItem], source_url: str = "", steps: List[str] = None) -> str:
+    def generate(
+        self,
+        items: List[CategorizedItem],
+        source_url: str = "",
+        steps: List[str] = None,
+        carousel_data: List[dict] = None,
+    ) -> str:
         """Generate markdown output from categorized items."""
         if not items:
             return "# No Content Extracted\n\nNo entities were found in the source."
@@ -44,6 +50,24 @@ class MarkdownGenerator:
         
         md.append(f"**Items Found:** {len(items)}")
         md.append("")
+
+        # Carousel breakdown (if available)
+        if carousel_data:
+            md.append("## Carousel Breakdown")
+            md.append("")
+            for img in carousel_data:
+                img_num = img.get("image_number", "?")
+                category = img.get("category", "other")
+                entities = img.get("entities", [])
+                summary = img.get("summary", "")
+                relation = img.get("relation_to_previous", "")
+                entities_str = ", ".join(entities) if entities else "none"
+                md.append(f"### Image {img_num}: {category.title()}")
+                md.append(f"**Entities:** {entities_str}")
+                md.append(f"{summary}")
+                if relation:
+                    md.append(f"**Relation:** {relation}")
+                md.append("")
         
         # Group by primary topic
         by_topic = self._group_by_topic(items)
@@ -197,7 +221,7 @@ class JSONGenerator:
         
         return {
             "metadata": {
-                "generated_at": datetime.utcnow().isoformat(),
+                "generated_at": datetime.now(UTC).isoformat(),
                 "source_url": source_url,
                 "total_items": len(items),
                 "topics": list(set(item.primary_topic.value for item in items)),
@@ -254,13 +278,14 @@ def generate_outputs(
     items: List[CategorizedItem],
     source_url: str,
     output_dir: str,
-    steps: List[str] = None
+    steps: List[str] = None,
+    carousel_data: List[dict] = None,
 ) -> tuple[Path, Path]:
     """Generate both markdown and JSON outputs."""
     md_gen = MarkdownGenerator()
     json_gen = JSONGenerator()
     
-    md_content = md_gen.generate(items, source_url, steps=steps)
+    md_content = md_gen.generate(items, source_url, steps=steps, carousel_data=carousel_data)
     json_data = json_gen.generate(items, source_url, steps=steps)
     
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")

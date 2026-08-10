@@ -19,6 +19,8 @@ from src.config.models import (
     DocumentChunk,
     PipelineStage,
     ProcessingResult,
+    InstagramContentType,
+    CarouselImageCategory,
 )
 from loguru import logger
 
@@ -340,9 +342,35 @@ class ContentExtractor:
         """Extract Instagram content using saved cookies with Playwright.
         
         For Reels without captions, falls back to video frame extraction + OCR.
+        For Carousels, extracts images and OCRs each one.
         """
         # First, try to get metadata via yt-dlp to check if caption exists
         metadata = await self._get_instagram_metadata(url)
+
+        # Detect content type
+        content_type = self._detect_instagram_content_type(url, metadata)
+        logger.info(f"Instagram content type: {content_type.value}")
+
+        # Route carousel to dedicated extraction
+        if content_type == InstagramContentType.CAROUSEL:
+            carousel_text = await self._extract_instagram_carousel(url, metadata)
+            title = metadata.get("uploader", "Instagram Post") if metadata else "Instagram Post"
+            content = ExtractedContent(
+                url=url,
+                title=f"Carousel by {title}",
+                raw_text=carousel_text,
+                markdown=carousel_text,
+                metadata={
+                    "extractor": "instagram_carousel",
+                    "uploader": title,
+                    "content_type": "carousel",
+                },
+                content_type=InstagramContentType.CAROUSEL,
+                content_length=len(carousel_text),
+                word_count=len(carousel_text.split()),
+            )
+            content = self._filter_instagram_feed(content, url)
+            return content
         
         def _extract_sync():
             from playwright.sync_api import sync_playwright
@@ -502,6 +530,8 @@ class ContentExtractor:
                     raw_text=full_text,
                     markdown=full_text,
                     metadata={"extractor": "instagram_metadata", "uploader": title, "has_caption": bool(description)},
+                    content_type=InstagramContentType.REEL,
+                    transcript_quality=self._detect_transcript_quality(full_text),
                     content_length=len(full_text),
                     word_count=len(full_text.split())
                 )
@@ -518,6 +548,8 @@ class ContentExtractor:
                     raw_text=full_text,
                     markdown=full_text,
                     metadata={"extractor": "instagram_video_frames", "uploader": title, "has_caption": False},
+                    content_type=InstagramContentType.REEL,
+                    transcript_quality=self._detect_transcript_quality(full_text),
                     content_length=len(full_text),
                     word_count=len(full_text.split())
                 )
@@ -547,6 +579,8 @@ class ContentExtractor:
                 raw_text=full_text,
                 markdown=full_text,
                 metadata={"extractor": "instagram_cookies", "has_caption": True},
+                content_type=InstagramContentType.REEL,
+                transcript_quality=self._detect_transcript_quality(full_text),
                 content_length=len(full_text),
                 word_count=len(full_text.split())
             )
@@ -564,6 +598,8 @@ class ContentExtractor:
                 raw_text=full_text,
                 markdown=full_text,
                 metadata={"extractor": "instagram_metadata_fallback", "uploader": title, "has_caption": True},
+                content_type=InstagramContentType.REEL,
+                transcript_quality=self._detect_transcript_quality(full_text),
                 content_length=len(full_text),
                 word_count=len(full_text.split())
             )
@@ -596,24 +632,28 @@ class ContentExtractor:
             r"(?:ジャンプ|サーブ|バレーボール)",  # Japanese sports content
             r"(?:Free Certifications|Google & Microsoft)",  # Certification spam
             r"(?:follow for|follow me)",  # Follow requests
+            # Generic Instagram UI patterns
+            r"See more",
+            r"View all \d+ comments?",
+            r"Add a comment",
+            r"@\w+\s*•\s*Follow",
+            r"^Follow$",
+            r"^Following$",
+            r"^\d+[KkMm]?\s*likes?",
+            r"^\d+\s*(comments?|replies?)$",
+            r"Send via message",
+            r"Share to",
+            r"Copy link",
+            r"QR code",
         ]
         
-        # Check if content looks like feed content
-        # Skip feed filter if content has video transcription/OCR markers (real reel content)
-        has_video_content = (
-            "[Audio Transcript]" in raw_text
-            or "[Video Frame OCR]" in raw_text
-            or "[Video Content]" in raw_text
-            or "[English Transcript]" in raw_text
-            or "[Hindi Translation]" in raw_text
-        )
+        # Always check for feed content indicators (no bypass for video content)
         is_feed_content = False
-        if not has_video_content:
-            for pattern in feed_indicators:
-                if re.search(pattern, raw_text, re.IGNORECASE):
-                    is_feed_content = True
-                    logger.info(f"Detected feed content indicator: {pattern}")
-                    break
+        for pattern in feed_indicators:
+            if re.search(pattern, raw_text, re.IGNORECASE):
+                is_feed_content = True
+                logger.info(f"Detected feed content indicator: {pattern}")
+                break
         
         # If content looks like feed content, try to extract the first meaningful post
         # rather than returning empty - the first post is often the target reel
@@ -687,6 +727,144 @@ class ContentExtractor:
         # If filtering didn't help, return original
         logger.warning("Instagram feed filtering did not improve content, returning original")
         return content
+
+    def _detect_instagram_content_type(self, url: str, metadata: dict) -> InstagramContentType:
+        """Detect if URL is reel, carousel, or single post."""
+        if "/reel/" in url or "/tv/" in url:
+            return InstagramContentType.REEL
+
+        entries = metadata.get("entries", [])
+        if len(entries) > 1:
+            return InstagramContentType.CAROUSEL
+
+        if metadata.get("duration") and metadata["duration"] > 0:
+            return InstagramContentType.REEL
+
+        return InstagramContentType.CAROUSEL
+
+    def _detect_transcript_quality(self, text: str) -> str:
+        """Detect if transcript is real content or music/silence."""
+        if not text:
+            return "empty"
+
+        text_lower = text.lower()
+
+        music_markers = [
+            "[music]", "[applause]", "[sound]", "[silence]",
+            "[instrumental]", "[background music]",
+        ]
+        if any(m in text_lower for m in music_markers):
+            return "music_only"
+
+        if len(text.strip()) < 50:
+            return "short"
+
+        action_verbs = [
+            "open", "click", "install", "run", "copy", "paste",
+            "go to", "type", "select", "choose", "create", "set up",
+        ]
+        if not any(v in text_lower for v in action_verbs):
+            return "no_actions"
+
+        return "real_content"
+
+    def _filter_ocr_noise(self, ocr_text: str) -> str:
+        """Filter out Instagram UI noise from OCR results."""
+        lines = ocr_text.split("\n")
+        filtered = []
+
+        noise_patterns = [
+            r"^\d+[KkMm]?\s*likes?$",
+            r"^\d+\s*(comments?|replies?)$",
+            r"^Follow$",
+            r"^Following$",
+            r"^Message$",
+            r"^Share$",
+            r"^Save$",
+            r"^Add a comment",
+            r"^View all \d+",
+            r"^Reply",
+            r"^@\w+",
+            r"^\d+[KkMm]?\s*followers?$",
+            r"^\d+\s*posts?$",
+            r"^See more",
+            r"^Translate",
+            r"^Send via message",
+            r"^Copy link",
+            r"^QR code",
+        ]
+
+        for line in lines:
+            line_stripped = line.strip()
+            if not line_stripped:
+                filtered.append(line)
+                continue
+
+            if len(line_stripped) < 3:
+                continue
+
+            if any(re.match(p, line_stripped, re.IGNORECASE) for p in noise_patterns):
+                continue
+
+            filtered.append(line)
+
+        return "\n".join(filtered)
+
+    async def _download_image(self, url: str, dest: Path) -> bool:
+        """Download an image from URL to destination path."""
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                resp = await client.get(url, follow_redirects=True)
+                resp.raise_for_status()
+                dest.write_bytes(resp.content)
+                return True
+        except Exception as e:
+            logger.warning(f"Failed to download image {url}: {e}")
+            return False
+
+    async def _extract_instagram_carousel(self, url: str, metadata: dict) -> str:
+        """Extract content from Instagram carousel (multiple images)."""
+        import shutil
+        import tempfile
+
+        caption = metadata.get("description", "")
+        entries = metadata.get("entries", [])
+
+        if not entries:
+            image_url = metadata.get("thumbnail") or metadata.get("url")
+            if image_url:
+                entries = [{"url": image_url, "thumbnail": image_url}]
+
+        temp_dir = Path(tempfile.mkdtemp(prefix="ig_carousel_"))
+        image_paths = []
+
+        for i, entry in enumerate(entries):
+            image_url = entry.get("url") or entry.get("thumbnail")
+            if not image_url:
+                continue
+
+            image_path = temp_dir / f"image_{i}.jpg"
+            if await self._download_image(image_url, image_path):
+                image_paths.append(image_path)
+
+        ocr_texts = []
+        if image_paths:
+            raw_ocr = await self._ocr_frames(image_paths)
+            raw_ocr = self._filter_ocr_noise(raw_ocr)
+            ocr_sections = raw_ocr.split("\n\n")
+            for i, section in enumerate(ocr_sections):
+                if section.strip():
+                    ocr_texts.append(f"[Carousel Image {i+1}]:\n{section.strip()}")
+
+        parts = []
+        if caption:
+            parts.append(f"[Caption]:\n{caption}")
+        if ocr_texts:
+            parts.append("\n\n".join(ocr_texts))
+
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+        return "\n\n".join(parts)
 
     async def _get_instagram_metadata(self, url: str) -> dict:
         """Get Instagram Reel metadata using yt-dlp."""
@@ -845,6 +1023,7 @@ class ContentExtractor:
             if frames:
                 ocr_text = await self._ocr_frames(frames)
                 if ocr_text:
+                    ocr_text = self._filter_ocr_noise(ocr_text)
                     logger.info(f"OCR extracted {len(ocr_text)} chars from video frames")
             
             # Combine transcript and OCR text

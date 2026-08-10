@@ -2,7 +2,7 @@ import asyncio
 import json
 import os
 from typing import List, Dict, Any, Optional, Set, Tuple
-from datetime import datetime
+from datetime import datetime, UTC
 from uuid import uuid4
 
 from neo4j import AsyncGraphDatabase, AsyncDriver
@@ -265,8 +265,8 @@ class Neo4jGraphStore(GraphStore):
             "source_chunk_id": entity.source_chunk_id,
             "confidence": entity.confidence,
             "version": 1,
-            "created_at": datetime.utcnow().isoformat(),
-            "updated_at": datetime.utcnow().isoformat(),
+            "created_at": datetime.now(UTC).isoformat(),
+            "updated_at": datetime.now(UTC).isoformat(),
         }
         
         # Remove None values
@@ -307,8 +307,8 @@ class Neo4jGraphStore(GraphStore):
                                 "source_chunk_id": entity.source_chunk_id,
                                 "confidence": entity.confidence,
                                 "version": 1,
-                                "created_at": datetime.utcnow().isoformat(),
-                                "updated_at": datetime.utcnow().isoformat(),
+                                "created_at": datetime.now(UTC).isoformat(),
+                                "updated_at": datetime.now(UTC).isoformat(),
                                 "node_type": "entity"
                             }
                         }]
@@ -339,7 +339,7 @@ class Neo4jGraphStore(GraphStore):
             qdrant_id = node_data.get("qdrant_id", existing_payload.get("qdrant_id", node_id))
             
             # Merge description with timestamp
-            new_desc = f"\n\n--- UPDATE {datetime.utcnow().isoformat()} ---\n{entity.description}"
+            new_desc = f"\n\n--- UPDATE {datetime.now(UTC).isoformat()} ---\n{entity.description}"
             merged_desc = node_data.get("description", "") + new_desc
             
             # Merge web_info
@@ -362,7 +362,7 @@ class Neo4jGraphStore(GraphStore):
                 "similar_tools": json.dumps(merged_tools),
                 "tags": json.dumps(merged_tags),
                 "version": node_data.get("version", 1) + 1,
-                "updated_at": datetime.utcnow().isoformat(),
+                "updated_at": datetime.now(UTC).isoformat(),
                 "confidence": max(node_data.get("confidence", 0), entity.confidence)
             }
             
@@ -385,7 +385,7 @@ class Neo4jGraphStore(GraphStore):
                 "source_url": entity.source_url,
                 "source_chunk_id": entity.source_chunk_id,
                 "content_type": item.content_type.value,
-                "timestamp": datetime.utcnow().isoformat()
+                "timestamp": datetime.now(UTC).isoformat()
             }
             episodic_query = """
             CREATE (ep:EpisodicMemory $props)
@@ -444,7 +444,7 @@ class Neo4jGraphStore(GraphStore):
         MERGE (e2)-[r2:SIMILAR_TO]->(e1)
         SET r2.weight = $weight, r2.created_at = $created_at
         """
-        await session.run(query, node1=node1, node2=node2, weight=weight, created_at=datetime.utcnow().isoformat())
+        await session.run(query, node1=node1, node2=node2, weight=weight, created_at=datetime.now(UTC).isoformat())
     
     async def _create_relationship_edge(self, session, rel: ExtractedRelationship):
         """Create a typed relationship edge between two entities."""
@@ -477,7 +477,7 @@ class Neo4jGraphStore(GraphStore):
             target=rel.target,
             description=rel.description,
             confidence=rel.confidence,
-            created_at=datetime.utcnow().isoformat(),
+            created_at=datetime.now(UTC).isoformat(),
         )
     
     async def _create_cooccurrence_edges(self, session, items: List[CategorizedItem]) -> int:
@@ -511,7 +511,7 @@ class Neo4jGraphStore(GraphStore):
                         name1=entity_names[i],
                         name2=entity_names[j],
                         chunk_id=chunk_id,
-                        updated_at=datetime.utcnow().isoformat(),
+                        updated_at=datetime.now(UTC).isoformat(),
                     )
                     edge_count += 1
         
@@ -526,7 +526,7 @@ class Neo4jGraphStore(GraphStore):
         MERGE (t:Topic {name: $topic_name})
         ON CREATE SET t.created_at = $created_at
         """
-        await session.run(topic_query, topic_name=topic_name, created_at=datetime.utcnow().isoformat())
+        await session.run(topic_query, topic_name=topic_name, created_at=datetime.now(UTC).isoformat())
         
         # Create subtopic nodes (scoped to parent topic)
         for subtopic in item.sub_topics:
@@ -537,7 +537,7 @@ class Neo4jGraphStore(GraphStore):
             MATCH (t:Topic {name: $topic_name})
             MERGE (s)-[:PART_OF]->(t)
             """
-            await session.run(subtopic_query, subtopic=subtopic, topic_name=topic_name, created_at=datetime.utcnow().isoformat())
+            await session.run(subtopic_query, subtopic=subtopic, topic_name=topic_name, created_at=datetime.now(UTC).isoformat())
         
         # Connect entity to subtopic (or topic)
         entity_query = """
@@ -647,7 +647,7 @@ class Neo4jGraphStore(GraphStore):
                 query,
                 url=url,
                 title=title,
-                created_at=datetime.utcnow().isoformat(),
+                created_at=datetime.now(UTC).isoformat(),
                 metadata=json.dumps(metadata or {}),
             )
         return url
@@ -686,7 +686,7 @@ class Neo4jGraphStore(GraphStore):
                 entity_name=entity_name,
                 chunk_id=chunk_id,
                 evidence=evidence[:500],
-                created_at=datetime.utcnow().isoformat(),
+                created_at=datetime.now(UTC).isoformat(),
             )
 
 

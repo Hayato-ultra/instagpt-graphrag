@@ -9,7 +9,7 @@ Production: Use Neo4jGraphStore (Neo4j + Qdrant).
 import asyncio
 import json
 from typing import List, Dict, Any, Optional, Set, Tuple
-from datetime import datetime
+from datetime import datetime, UTC
 from uuid import uuid4
 
 import networkx as nx
@@ -162,8 +162,8 @@ class NetworkXStore(GraphStore):
                     "source_chunk_id": entity.source_chunk_id,
                     "confidence": entity.confidence,
                     "version": 1,
-                    "created_at": datetime.utcnow().isoformat(),
-                    "updated_at": datetime.utcnow().isoformat(),
+                    "created_at": datetime.now(UTC).isoformat(),
+                    "updated_at": datetime.now(UTC).isoformat(),
                     "node_type": "entity"
                 }
             }]
@@ -188,8 +188,8 @@ class NetworkXStore(GraphStore):
                 "source_chunk_id": entity.source_chunk_id,
                 "confidence": entity.confidence,
                 "version": 1,
-                "created_at": datetime.utcnow().isoformat(),
-                "updated_at": datetime.utcnow().isoformat(),
+                "created_at": datetime.now(UTC).isoformat(),
+                "updated_at": datetime.now(UTC).isoformat(),
                 "node_type": "entity"
             }
         )
@@ -205,7 +205,7 @@ class NetworkXStore(GraphStore):
             node_data = self.graph.nodes[node_id]
             
             # Append description with timestamp
-            new_desc = f"\n\n--- UPDATE {datetime.utcnow().isoformat()} ---\n{entity.description}"
+            new_desc = f"\n\n--- UPDATE {datetime.now(UTC).isoformat()} ---\n{entity.description}"
             node_data["description"] = node_data.get("description", "") + new_desc
             
             # Merge web_info
@@ -227,7 +227,7 @@ class NetworkXStore(GraphStore):
             
             # Update metadata
             node_data["version"] = node_data.get("version", 1) + 1
-            node_data["updated_at"] = datetime.utcnow().isoformat()
+            node_data["updated_at"] = datetime.now(UTC).isoformat()
             node_data["confidence"] = max(node_data.get("confidence", 0), entity.confidence)
             
             # Update content_type if more specific
@@ -243,7 +243,7 @@ class NetworkXStore(GraphStore):
             source_url=entity.source_url,
             source_chunk_id=entity.source_chunk_id,
             content_type=item.content_type.value,
-            timestamp=datetime.utcnow().isoformat(),
+            timestamp=datetime.now(UTC).isoformat(),
             node_type="episodic"
         )
         self.graph.add_edge(episodic_id, node_id, relation="UPDATES")
@@ -299,7 +299,7 @@ class NetworkXStore(GraphStore):
             node1, node2,
             relation="SIMILAR_TO",
             weight=weight,
-            created_at=datetime.utcnow().isoformat()
+            created_at=datetime.now(UTC).isoformat()
         )
         
         # Also add reverse edge for undirected similarity
@@ -307,7 +307,7 @@ class NetworkXStore(GraphStore):
             node2, node1,
             relation="SIMILAR_TO",
             weight=weight,
-            created_at=datetime.utcnow().isoformat()
+            created_at=datetime.now(UTC).isoformat()
         )
     
     def _create_relationship_edge(self, rel: ExtractedRelationship):
@@ -328,7 +328,7 @@ class NetworkXStore(GraphStore):
                 relation=rel.relation_type.upper(),
                 description=rel.description,
                 confidence=rel.confidence,
-                created_at=datetime.utcnow().isoformat()
+                created_at=datetime.now(UTC).isoformat()
             )
     
     def _create_cooccurrence_edges(self, items: List[CategorizedItem]) -> int:
@@ -363,7 +363,7 @@ class NetworkXStore(GraphStore):
                             n1, n2,
                             relation="CO_OCCURS_WITH",
                             source_chunk_id=chunk_id,
-                            created_at=datetime.utcnow().isoformat()
+                            created_at=datetime.now(UTC).isoformat()
                         )
                         edge_count += 1
         
@@ -380,7 +380,7 @@ class NetworkXStore(GraphStore):
                 topic_id,
                 name=topic_name,
                 node_type="topic",
-                created_at=datetime.utcnow().isoformat()
+                created_at=datetime.now(UTC).isoformat()
             )
         
         # Create subtopic nodes
@@ -393,7 +393,7 @@ class NetworkXStore(GraphStore):
                     name=subtopic,
                     parent_topic=topic_name,
                     node_type="subtopic",
-                    created_at=datetime.utcnow().isoformat()
+                    created_at=datetime.now(UTC).isoformat()
                 )
             
             # Connect subtopic to topic
@@ -415,7 +415,7 @@ class NetworkXStore(GraphStore):
                 self.graph.add_edge(
                     entity_node, target,
                     relation="BELONGS_TO",
-                    created_at=datetime.utcnow().isoformat()
+                    created_at=datetime.now(UTC).isoformat()
                 )
 
     def get_entity(self, name: str) -> Optional[Dict]:

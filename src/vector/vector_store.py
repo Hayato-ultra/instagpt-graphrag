@@ -68,6 +68,7 @@ class Embedder:
         self.model = settings.OPENAI_EMBEDDING_MODEL
         self.dimensions = settings.OPENAI_EMBEDDING_DIM
         self.batch_size = settings.EMBEDDING_BATCH_SIZE
+        self.ollama_base_url = getattr(settings, 'OLLAMA_BASE_URL', 'http://localhost:11434')
 
     async def embed_texts(self, texts: List[str]) -> List[List[float]]:
         """Embed a list of texts with fallback providers."""
@@ -124,6 +125,20 @@ class Embedder:
                 return [self._adjust_dimensions(e) for e in embeddings]
             except Exception as e:
                 logger.warning(f"Google embedding failed: {e}")
+        
+        # Try Ollama (nomic-embed-text, 768 dims)
+        try:
+            import requests as _requests
+            r = _requests.post(
+                f"{self.ollama_base_url}/api/embed",
+                json={"model": "nomic-embed-text", "input": batch},
+                timeout=30
+            )
+            r.raise_for_status()
+            embeddings = r.json()["embeddings"]
+            return [self._adjust_dimensions(e) for e in embeddings]
+        except Exception as e:
+            logger.warning(f"Ollama embedding failed: {e}")
         
         raise Exception("All embedding providers failed")
     

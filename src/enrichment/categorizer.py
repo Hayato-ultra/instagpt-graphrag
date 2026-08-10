@@ -128,19 +128,23 @@ class Categorizer:
         )
         all_subtopics = {t.value: subs for t, subs in TOPIC_TAXONOMY.items()}
 
-        prompt = f"""Analyze the following tech content deeply and return a JSON object
-with ALL of these fields:
+        prompt = f"""Analyze this tutorial/reel content and return a JSON object with these fields:
 
 1. "topic": ONE of [{", ".join(topics)}]
 2. "topic_confidence": float 0.0-1.0
-3. "subtopics": array of 1-3 strings from the subtopics list matching the chosen topic
+3. "subtopics": array of 1-3 strings from the subtopics list
 4. "content_type": ONE of the content types below
 5. "type_confidence": float 0.0-1.0
-6. "summary": 2-3 sentence summary describing WHAT the content covers based ONLY on the source content.
-   Do NOT invent information not in the source. If the source shows Maya rigs, say "The content shows Maya rigs".
-7. "key_points": array of 3-7 key points. Each point should be something explicitly mentioned in the source.
-   Include specific names, tools, or websites visible in the source.
-8. "detailed_analysis": 2-3 paragraphs analyzing the content's approach based ONLY on what the source shows.
+6. "summary": 2-3 sentences describing:
+   - What PROBLEM does this content solve?
+   - What SOLUTION does it provide?
+   - What TOOLS/TECHNOLOGIES are used in the solution?
+7. "key_points": array of 3-7 key points describing:
+   - What specific STEPS are shown
+   - What COMMANDS/TOOLS are used
+   - What CONFIGURATIONS are made
+   - What RESULT is achieved
+8. "detailed_analysis": 2-3 paragraphs analyzing the APPROACH and WORKFLOW shown
 
 Content type definitions:
 {content_type_defs}
@@ -151,26 +155,29 @@ Available subtopics per topic:
 Content to analyze:
 {text}
 
-CRITICAL RULES:
-- ONLY describe what is EXPLICITLY in the source content
-- Do NOT hallucinate or infer information not present
-- If the source shows a video about Maya 3D rigs, describe it as "Maya 3D animation software" NOT "React application"
-- Key points must be things actually mentioned or shown in the source
+RULES:
+- Focus on WHAT THE CONTENT TEACHES, not what entities are
+- Describe the PROBLEM → SOLUTION flow
+- Include specific commands, tools, and configurations mentioned
+- Key points should be actionable steps or insights from the content
+- Summary should answer: "What will I learn from this content?"
 
-Example response format:
+Example response for a React+Vite+Tailwind tutorial:
 {{
-  "topic": "other",
-  "topic_confidence": 0.9,
-  "subtopics": [],
-  "content_type": "tool_review",
-  "type_confidence": 0.85,
-  "summary": "The content showcases Maya rigs from Agora Studio, including Gamma and Alpha characters. Various rigs are displayed on Gumroad.com for animators.",
+  "topic": "frontend",
+  "topic_confidence": 0.95,
+  "subtopics": ["react", "tailwind"],
+  "content_type": "tutorial",
+  "type_confidence": 0.9,
+  "summary": "This tutorial shows how to quickly set up a modern React project using Vite and Tailwind CSS. It solves the problem of boilerplate setup by demonstrating npm create vite, installing Tailwind, and configuring the Vite plugin.",
   "key_points": [
-    "Shows Gamma character from Agora Original Rigs family",
-    "Displays Maya rigs available on Gumroad.com",
-    "Features Sheriff Rig, Spider Silk, and BreinerRigger"
+    "Run 'npm create vite' to scaffold React project",
+    "Select React framework and JavaScript variant",
+    "Install Tailwind CSS via npm",
+    "Configure vite.config.js with Tailwind plugin",
+    "Start dev server with npm run dev"
   ],
-  "detailed_analysis": "This content is a showcase of Maya 3D animation rigs. The video displays characters from Agora Studio's Original Rigs family..."
+  "detailed_analysis": "The content demonstrates a streamlined approach to setting up a React development environment..."
 }}
 
 Return ONLY valid JSON."""
@@ -180,11 +187,11 @@ Return ONLY valid JSON."""
                 {
                     "role": "system",
                     "content": (
-                        "You are a technical content analyst. CRITICAL RULE: "
-                        "You MUST ONLY describe what is explicitly stated in the Source Content. "
-                        "Do NOT invent, hallucinate, or assume information that is NOT in the source. "
-                        "The summary must be a faithful summary of what the source actually says. "
-                        "Key points must be things explicitly mentioned in the source. "
+                        "You are analyzing a tutorial/reel to understand its PURPOSE and SOLUTION. "
+                        "Focus on: What problem does this solve? What steps are shown? "
+                        "What tools are used? What is the workflow? "
+                        "Do NOT give generic entity definitions. "
+                        "Describe the content's APPROACH and VALUE to the viewer. "
                         "Return valid JSON."
                     ),
                 },
@@ -312,6 +319,91 @@ Return ONLY valid JSON."""
             summary=entity.description[:200],
             key_points=[],
         )
+
+    async def categorize_carousel_images(
+        self, raw_text: str
+    ) -> list[dict]:
+        """Categorize each carousel image and map relations between them."""
+        carousel_sections = []
+        parts = raw_text.split("[Carousel Image ")
+        for part in parts[1:]:
+            idx_end = part.find("]:")
+            if idx_end == -1:
+                continue
+            image_num = part[:idx_end]
+            ocr_text = part[idx_end + 2:].strip()
+            carousel_sections.append({"image_num": image_num, "ocr_text": ocr_text})
+
+        if not carousel_sections:
+            return []
+
+        # Build context for all images
+        images_context = "\n\n".join(
+            f"Image {s['image_num']}:\n{s['ocr_text'][:500]}"
+            for s in carousel_sections
+        )
+
+        try:
+            result = await self.llm.chat_completion(
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are a technical content analyst for Instagram carousels. "
+                            "Analyze each image's OCR text and categorize it. "
+                            "Return valid JSON."
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": (
+                            "Analyze each carousel image and categorize it.\n\n"
+                            "Categories:\n"
+                            "- terminal: shows terminal/CLI commands\n"
+                            "- code: shows source code\n"
+                            "- config: shows configuration file\n"
+                            "- ui_result: shows browser/app output\n"
+                            "- screenshot: shows a website or app screenshot\n"
+                            "- reference: shows documentation or reference material\n"
+                            "- other: doesn't fit above categories\n\n"
+                            "Also identify:\n"
+                            "- Which entities (tools/frameworks) are shown in each image\n"
+                            "- How each image relates to the previous one (is it a next step? result?)\n"
+                            "- The sequence position of each image\n\n"
+                            f"Images:\n{images_context}\n\n"
+                            'Return a JSON object with "images" array. Each entry has:\n'
+                            "- \"image_number\": string (e.g., \"1\")\n"
+                            "- \"category\": one of the categories above\n"
+                            "- \"entities\": array of entity names shown\n"
+                            "- \"summary\": 1 sentence describing what the image shows\n"
+                            "- \"relation_to_previous\": how this relates to the previous image\n"
+                            "- \"sequence_position\": integer starting from 1\n\n"
+                            "Return ONLY valid JSON."
+                        ),
+                    },
+                ],
+                temperature=0.2,
+                max_tokens=1500,
+                response_format={"type": "json_object"},
+            )
+
+            content = result["content"].strip()
+
+            json_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", content, re.DOTALL)
+            if json_match:
+                content = json_match.group(1)
+            elif not content.startswith("{"):
+                brace_start = content.find("{")
+                brace_end = content.rfind("}")
+                if brace_start != -1 and brace_end != -1:
+                    content = content[brace_start:brace_end + 1]
+
+            data = json.loads(content)
+            return data.get("images", [])
+
+        except Exception as e:
+            logger.warning(f"Carousel image categorization failed: {e}")
+            return []
 
     async def close(self):
         """Close the LLM client."""

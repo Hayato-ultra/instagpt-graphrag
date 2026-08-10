@@ -752,6 +752,9 @@ class EnrichmentPipeline:
         descriptions = await self._generate_descriptions_batch(searched)
         enriched = self._assemble_enriched(searched, descriptions)
 
+        # Validate entities against transcript source
+        enriched = self._validate_entities_against_source(enriched, chunks)
+
         # Extract relationships between entities
         relationships = await self._extract_relationships(enriched, chunks)
 
@@ -808,6 +811,24 @@ class EnrichmentPipeline:
         if not has_tutorial_content or len(all_text) < 100:
             return []
 
+        # Detect transcript quality for dynamic priority
+        transcript_quality = self._detect_transcript_quality(all_text)
+
+        # Build priority instruction based on transcript quality
+        if transcript_quality in ["music_only", "short", "empty"]:
+            priority_instruction = (
+                "The audio transcript contains only music/silence.\n"
+                "USE [Video Frame OCR] or [Carousel Image N] as PRIMARY source.\n"
+                "Extract steps from OCR text, ignoring Instagram UI elements.\n\n"
+            )
+        else:
+            priority_instruction = (
+                "The [Audio Transcript] is the PRIMARY source of truth.\n"
+                "Extract steps from [Audio Transcript] ONLY.\n"
+                "Steps should follow the exact sequence the creator described verbally.\n"
+                "Ignore [Video Frame OCR] - it may show unrelated screens.\n\n"
+            )
+
         try:
             from src.enrichment.llm_client import LLMClient
             llm = LLMClient()
@@ -817,21 +838,24 @@ class EnrichmentPipeline:
                     {
                         "role": "system",
                         "content": (
-                            "Extract step-by-step instructions from this video content.\n\n"
+                            f"{priority_instruction}"
+                            "Extract the EXACT step-by-step instructions from this tutorial/reel.\n\n"
+                            "The transcript contains the creator's spoken instructions in order.\n"
+                            "Extract each step EXACTLY as the creator described it.\n\n"
                             "RULES:\n"
-                            "- Only extract actionable steps (things the viewer should DO)\n"
-                            "- Keep steps concise (1-2 sentences each)\n"
-                            "- Include website/tool names exactly as mentioned\n"
-                            "- Order steps chronologically\n"
-                            "- Maximum 10 steps\n"
+                            "- Follow the EXACT order from the transcript\n"
+                            "- Include the EXACT commands/tools mentioned (e.g., 'npm create vite')\n"
+                            "- Include what to SELECT/CHOOSE when mentioned (e.g., 'select React, then JavaScript')\n"
+                            "- Keep steps concise but include all details the creator mentioned\n"
+                            "- Maximum 15 steps\n"
                             "- If no clear steps found, return empty array\n\n"
                             "Return a JSON object with a \"steps\" array of strings."
                         ),
                     },
-                    {"role": "user", "content": f"Extract steps from this content:\n\n{all_text[:3000]}"},
+                    {"role": "user", "content": f"Extract the exact steps from this transcript:\n\n{all_text[:3000]}"},
                 ],
                 temperature=0.1,
-                max_tokens=500,
+                max_tokens=800,
             )
             
             import json
@@ -874,7 +898,7 @@ class EnrichmentPipeline:
         # Prioritize chunks with video/OCR content (most relevant for Reels)
         video_chunks = [c for c in chunks if any(marker in c.text for marker in 
             ["[Video Content]", "[Video Frame OCR]", "[Audio Transcript]", 
-             "[English Transcript]", "[Hindi Translation]"])]
+             "[English Transcript]", "[Hindi Translation]", "[Carousel Image"])]
         
         if video_chunks:
             # Use video chunks first, they contain the actual screen recording content
@@ -886,28 +910,55 @@ class EnrichmentPipeline:
         if len(combined_text.strip()) < 50:
             return {}
 
+        # Detect transcript quality for dynamic priority
+        all_text = "\n".join(c.text for c in chunks)
+        transcript_quality = self._detect_transcript_quality(all_text)
+
+        # Build priority instruction based on transcript quality
+        if transcript_quality in ["music_only", "short", "empty"]:
+            priority_instruction = (
+                "PRIORITY: The audio transcript contains only music/silence with no spoken instructions.\n"
+                "USE [Video Frame OCR] or [Carousel Image N] as your PRIMARY source of information.\n"
+                "Extract entities from the OCR text.\n"
+                "IGNORE any text that appears to be Instagram UI (likes, comments, follow buttons).\n\n"
+            )
+        else:
+            priority_instruction = (
+                "PRIORITY: The [Audio Transcript] is the PRIMARY source of truth.\n"
+                "USE [Audio Transcript] and [Caption] for entity extraction.\n"
+                "[Video Frame OCR] is SECONDARY - may contain text from OTHER reels or Instagram UI.\n"
+                "Only extract entities that appear in the transcript or caption.\n\n"
+            )
+
+        # Add carousel context if present
+        if any("[Carousel Image" in c.text for c in chunks):
+            priority_instruction += (
+                "This is a CAROUSEL post with multiple images.\n"
+                "Each [Carousel Image N] contains OCR text from one image.\n"
+                "Extract entities from carousel images, but prefer transcript/caption entities.\n\n"
+            )
+
         prompt = (
-            "Extract ALL specific technical entities that are EXPLICITLY MENTIONED in this content. "
-            "Focus on: tool names, website names, product names, framework names, library names.\n\n"
-            "IMPORTANT:\n"
-            "- ONLY extract entities that are ACTUALLY SHOWN or MENTIONED in the source content\n"
-            "- Look for proper nouns and brand names visible on screen (e.g., 'Firecrawl', 'Localsend')\n"
-            "- Look for website URLs or site names visible in screen recordings\n"
+            f"{priority_instruction}"
+            "Extract ALL specific technical entities that are EXPLICITLY MENTIONED in this content.\n\n"
+            "For each entity, also capture WHAT IT DOES in this specific content.\n\n"
+            "RULES:\n"
+            "- ONLY extract entities that are ACTUALLY MENTIONED in the transcript/caption/OCR\n"
             "- Extract the EXACT names as they appear (preserve capitalization)\n"
             "- Do NOT extract generic terms (e.g., 'animations', 'CSS', 'websites')\n"
-            "- Do NOT include programming languages (JavaScript, Python, etc.) - too generic\n"
-            "- Do NOT include 'GitHub' unless a specific repository is mentioned\n"
+            "- Do NOT include programming languages (JavaScript, Python, etc.)\n"
             "- Do NOT include platform names (Instagram, Facebook, YouTube)\n"
             "- Do NOT include author/creator names\n"
-            "- Do NOT guess or infer entities - only extract what is clearly visible\n"
+            "- Do NOT guess or infer entities - only extract what is clearly mentioned\n"
             "- Maximum 10 entities\n\n"
             "Content:\n"
             f"{combined_text[:3000]}\n\n"
             "Return a JSON object with an \"entities\" array. Each entity has:\n"
-            "- \"name\": the exact entity name as written\n"
+            "- \"name\": the exact entity name\n"
             "- \"type\": one of [framework, library, tool, platform, service, "
             "database, concept, web_app, mobile_app, api, unknown]\n"
-            "- \"confidence\": float 0.0-1.0\n\n"
+            "- \"confidence\": float 0.0-1.0\n"
+            "- \"context\": what this entity DOES in this specific content (1 sentence)\n\n"
             "Return ONLY valid JSON."
         )
 
@@ -917,13 +968,12 @@ class EnrichmentPipeline:
                     {
                         "role": "system",
                         "content": (
-                            "You are a technical entity extractor. CRITICAL RULE: "
-                            "ONLY extract entities that are EXPLICITLY SHOWN or MENTIONED in the content. "
+                            "You are analyzing a tutorial/reel transcript to extract technical entities. "
+                            "CRITICAL RULE: ONLY extract entities that are EXPLICITLY MENTIONED in the content. "
                             "Do NOT guess, infer, or hallucinate entities. "
-                            "If the content shows a video about Maya 3D rigs, extract 'Maya' and 'Agora Studio'. "
-                            "Do NOT extract 'blender' if it's not mentioned. "
-                            "Focus on tools, frameworks, libraries, platforms, and product names visible on screen. "
-                            "Maximum 5. Return valid JSON."
+                            "For each entity, also capture what it DOES in this specific content. "
+                            "Focus on tools, frameworks, libraries, and product names actually mentioned. "
+                            "Maximum 10. Return valid JSON."
                         ),
                     },
                     {"role": "user", "content": prompt},
@@ -1009,7 +1059,7 @@ class EnrichmentPipeline:
                 entity_map[name_lower] = {
                     "name": name,
                     "type": entity_type,
-                    "context": combined_text[:300],
+                    "context": ent.get("context", combined_text[:300]),
                     "confidence": float(ent.get("confidence", 0.7)),
                     "source_chunk_id": chunks[0].id if chunks else "",
                     "source_text": combined_text,
@@ -1026,6 +1076,62 @@ class EnrichmentPipeline:
         except Exception as e:
             logger.warning(f"LLM entity extraction failed: {e}")
             return {}
+
+    def _detect_transcript_quality(self, text: str) -> str:
+        """Detect if transcript is real content or music/silence."""
+        if not text:
+            return "empty"
+
+        text_lower = text.lower()
+
+        music_markers = [
+            "[music]", "[applause]", "[sound]", "[silence]",
+            "[instrumental]", "[background music]",
+        ]
+        if any(m in text_lower for m in music_markers):
+            return "music_only"
+
+        if len(text.strip()) < 50:
+            return "short"
+
+        action_verbs = [
+            "open", "click", "install", "run", "copy", "paste",
+            "go to", "type", "select", "choose", "create", "set up",
+        ]
+        if not any(v in text_lower for v in action_verbs):
+            return "no_actions"
+
+        return "real_content"
+
+    def _validate_entities_against_source(
+        self, entities: list[EnrichedEntity], chunks: list[DocumentChunk]
+    ) -> list[EnrichedEntity]:
+        """Cross-validate extracted entities against transcript source."""
+        all_text = " ".join(c.text for c in chunks)
+
+        transcript_quality = self._detect_transcript_quality(all_text)
+
+        # Extract transcript portion only
+        primary_text = all_text
+        for marker in ["[Audio Transcript]:", "[Caption]:", "[Carousel Image"]:
+            idx = all_text.find(marker)
+            if idx != -1:
+                primary_text = all_text[idx:]
+                break
+
+        validated = []
+        for entity in entities:
+            if entity.name.lower() in primary_text.lower():
+                entity.confidence = min(entity.confidence + 0.1, 1.0)
+                validated.append(entity)
+            elif transcript_quality == "real_content":
+                entity.confidence *= 0.3
+                if entity.confidence > 0.3:
+                    validated.append(entity)
+            else:
+                validated.append(entity)
+
+        return validated
 
     def _extract_urls_from_chunks(self, chunks: list[DocumentChunk]) -> list[dict]:
         """Extract website URLs from OCR text in chunks."""
@@ -1275,17 +1381,12 @@ class EnrichmentPipeline:
         """Single LLM call to describe a batch of entities."""
         entity_summaries = []
         for e in batch:
-            search_results = e.get("search_results", [])
-            search_ctx = "\n".join(
-                f"  - {r.title}: {r.snippet[:300]}" for r in search_results[:4]
-            )
             # Use full source text for context, not just the match window
-            source_text = e.get("source_text", "")[:1500]
+            source_text = e.get("source_text", "")[:2000]
             entity_summaries.append(
                 f"Name: {e['name']}\n"
                 f"Type: {e['type']}\n"
                 f"Source Content:\n{source_text}\n"
-                f"Web Search Results:\n{search_ctx}"
             )
 
         entities_text = "\n\n".join(
@@ -1293,27 +1394,23 @@ class EnrichmentPipeline:
         )
 
         prompt = (
-            "CRITICAL RULE: You MUST ONLY describe what is explicitly stated in the Source Content. "
-            "Do NOT invent, hallucinate, or assume information that is NOT in the source.\n\n"
-            "For each entity below, write a description that:\n"
-            "1. States WHAT the entity IS based ONLY on the source content\n"
-            "2. Describes what the source shows about this entity\n"
-            "3. Mentions specific details from the source (e.g., 'the video shows X doing Y')\n"
-            "4. If the source doesn't contain enough info, say so briefly\n\n"
-            "DO NOT:\n"
-            "- Make up features or capabilities not mentioned in the source\n"
-            "- Describe generic use cases unrelated to the source\n"
-            "- Add web search information that contradicts the source\n"
-            "- Generate template descriptions (e.g., 'is a tool for X')\n\n"
-            "The description should read like a summary of what the source content says about this entity.\n\n"
+            "You are analyzing content from an Instagram reel/tutorial.\n\n"
+            "For each entity, describe WHAT IT DOES IN THIS SPECIFIC CONTENT — "
+            "not what the entity is in general.\n\n"
+            "RULES:\n"
+            "- Describe the ROLE this entity plays in the content (e.g., 'used to create the project', 'installed for styling')\n"
+            "- Describe the STEPS or ACTIONS involving this entity\n"
+            "- Describe the PROBLEM this entity solves in the context\n"
+            "- Do NOT give generic definitions (e.g., do NOT say 'React is a JavaScript library')\n"
+            "- Do NOT use web search knowledge — use ONLY the source content\n"
+            "- If the source doesn't mention enough about this entity, say 'mentioned in the tutorial'\n\n"
+            "The description should answer: What does this entity DO in this content?\n\n"
             f"Return a JSON object with a \"descriptions\" array containing "
             f"exactly {len(batch)} strings, in the same order as the entities.\n\n"
             f"Example:\n"
-            f'Entity: Maya\n'
-            f'Source: "Agora Studio showcases Maya rigs for 3D animation, including Gamma and Alpha characters"\n'
-            f'Description: "Maya is shown in the source as the 3D animation software used by Agora Studio. '
-            f'The video demonstrates Maya rigs including the Gamma character (first in the Agora Original Rigs family) '
-            f'and Alpha character. Various Maya rigs are displayed on Gumroad.com for purchase."\n\n'
+            f"Entity: Vite\n"
+            f'Source: "Open terminal, type npm create vite, select React, then JavaScript"\n'
+            f'Description: "Vite is the build tool used to scaffold the React project. The video shows running npm create vite to generate the project structure."\n\n'
             f"Entities:\n{entities_text}\n\n"
             "Return ONLY valid JSON."
         )
@@ -1324,13 +1421,13 @@ class EnrichmentPipeline:
                     {
                         "role": "system",
                         "content": (
-                            "You are a technical knowledge graph builder. CRITICAL RULE: "
-                            "You MUST ONLY describe what is explicitly stated in the Source Content. "
-                            "Do NOT invent information not present in the source. "
-                            "Write descriptions that accurately summarize what the source says about each entity. "
-                            "If the source shows a video about Maya rigs, say 'Maya is shown as the 3D software used for rigs'. "
-                            "Do NOT add generic descriptions like 'React hooks' or 'state management' if the source doesn't mention them. "
-                            "Write 2-4 sentences per entity. Return valid JSON with a \"descriptions\" array."
+                            "You are analyzing a tutorial/reel transcript. "
+                            "For each entity, describe what it DOES in this specific content — "
+                            "its role, the steps it's involved in, the problem it solves here. "
+                            "Do NOT give generic definitions. "
+                            "Do NOT use web search knowledge. "
+                            "Use ONLY the source content provided. "
+                            "Write 1-2 sentences per entity. Return valid JSON."
                         ),
                     },
                     {"role": "user", "content": prompt},
@@ -1441,27 +1538,25 @@ class EnrichmentPipeline:
         )
 
         prompt = (
-            "Given these entities from the same content, extract ALL meaningful "
-            "relationships between them. Relationship types to consider:\n\n"
-            "- USES: A uses B (e.g., 'React uses JSX', 'Docker uses Kubernetes')\n"
-            "- DEPENDS_ON: A depends on B (e.g., 'App depends on Database')\n"
-            "- IMPLEMENTS: A implements B (e.g., 'Express implements HTTP server')\n"
-            "- REPLACES: A replaces B (e.g., 'Vercel replaces Heroku')\n"
-            "- INTEGRATES_WITH: A integrates with B (e.g., 'Stripe integrates with React')\n"
-            "- PART_OF: A is part of B (e.g., 'React hooks are part of React')\n"
-            "- ALTERNATIVE_TO: A is an alternative to B (e.g., 'Vue is alternative to React')\n"
-            "- ENABLES: A enables B (e.g., 'Docker enables containerization')\n"
-            "- EVOLVED_FROM: A evolved from B (e.g., 'Next.js evolved from Create React App')\n"
-            "- COMPLEMENTS: A complements B (e.g., 'TypeScript complements JavaScript')\n\n"
+            "Given these entities from the same tutorial/reel, extract the WORKFLOW "
+            "relationships between them — how they are used together in this content.\n\n"
+            "Focus on relationships that describe the WORKFLOW shown:\n"
+            "- INSTALLS: A installs B (e.g., 'npm installs tailwindcss')\n"
+            "- CONFIGURES: A configures B (e.g., 'vite.config.js configures Tailwind')\n"
+            "- USED_TO_CREATE: A is used to create B (e.g., 'Vite used to create React project')\n"
+            "- USED_FOR: A is used for B (e.g., 'npm used for package management')\n"
+            "- INTEGRATES_WITH: A integrates with B (e.g., 'Tailwind integrates with Vite')\n"
+            "- RUNS: A runs B (e.g., 'npm run dev starts server')\n"
+            "- GENERATES: A generates B (e.g., 'create-vite generates project structure')\n\n"
             f"Entities:\n{entity_list}\n\n"
             f"Source Content:\n{source_texts}\n\n"
             f"Return a JSON object with a \"relationships\" array. Each relationship has:\n"
             f"- \"source\": name of entity A\n"
             f"- \"target\": name of entity B\n"
             f"- \"relation_type\": one of the types above\n"
-            f"- \"description\": brief explanation of the relationship\n"
+            f"- \"description\": what A does with B in this specific content\n"
             f"- \"confidence\": float 0.0-1.0\n\n"
-            f"Only include relationships you are confident about. "
+            f"Only include relationships shown in the source content. "
             f"Return ONLY valid JSON."
         )
 
@@ -1471,12 +1566,10 @@ class EnrichmentPipeline:
                     {
                         "role": "system",
                         "content": (
-                            "You are a technical knowledge graph builder specializing in "
-                            "software engineering relationships. Extract precise, factual "
-                            "relationships between entities. Focus on USES, DEPENDS_ON, "
-                            "IMPLEMENTS, INTEGRATES_WITH, and ALTERNATIVE_TO relationships. "
-                            "Only include relationships you are confident about from the "
-                            "context. Return valid JSON."
+                            "You are analyzing a tutorial/reel to extract workflow relationships. "
+                            "Focus on how entities work TOGETHER in this specific content: "
+                            "what installs what, what configures what, what uses what. "
+                            "Only include relationships shown in the source. Return valid JSON."
                         ),
                     },
                     {"role": "user", "content": prompt},

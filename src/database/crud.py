@@ -3,7 +3,7 @@
 Provides methods to create, read, update, and delete records.
 All operations are async and use the SQLAlchemy session.
 """
-from datetime import datetime
+from datetime import datetime, UTC
 from typing import List, Optional, Dict, Any
 
 from sqlalchemy import select, func, and_, or_
@@ -96,7 +96,7 @@ class CRUDOperations:
         if content:
             content.summary = summary
             content.entities_count = entities_count
-            content.updated_at = datetime.utcnow()
+            content.updated_at = datetime.now(UTC)
             await self.session.flush()
         return content
 
@@ -224,7 +224,7 @@ class CRUDOperations:
             entity.confidence = max(entity.confidence, confidence)
         if version is not None:
             entity.version = version
-        entity.updated_at = datetime.utcnow()
+        entity.updated_at = datetime.now(UTC)
         await self.session.flush()
         return entity
 
@@ -339,7 +339,7 @@ class CRUDOperations:
         existing = result.scalar_one_or_none()
         if existing:
             existing.confidence = max(existing.confidence, confidence)
-            existing.updated_at = datetime.utcnow() if hasattr(existing, "updated_at") else None
+            existing.updated_at = datetime.now(UTC) if hasattr(existing, "updated_at") else None
             await self.session.flush()
             return existing
 
@@ -434,7 +434,7 @@ class CRUDOperations:
         if metadata:
             job.result_metadata = metadata
         if status in ("completed", "failed"):
-            job.completed_at = datetime.utcnow()
+            job.completed_at = datetime.now(UTC)
         await self.session.flush()
         return job
 
@@ -611,7 +611,7 @@ class CRUDOperations:
         from src.database.models import EpisodicMemory
         from datetime import timedelta
         
-        cutoff = datetime.utcnow() - timedelta(days=max_age_days)
+        cutoff = datetime.now(UTC) - timedelta(days=max_age_days)
         result = await self.session.execute(
             select(EpisodicMemory)
             .where(EpisodicMemory.timestamp < cutoff)

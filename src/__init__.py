@@ -14,6 +14,8 @@ from src.config.models import (
     EntityType,
     ContentType,
     TopicCategory,
+    InstagramContentType,
+    CarouselImageCategory,
 )
 
 # Feature-based imports
@@ -42,6 +44,8 @@ __all__ = [
     "EntityType",
     "ContentType",
     "TopicCategory",
+    "InstagramContentType",
+    "CarouselImageCategory",
     # Features
     "ContentExtractor",
     "SemanticChunker",

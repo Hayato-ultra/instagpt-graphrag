@@ -1,6 +1,6 @@
 from pydantic import BaseModel, Field, HttpUrl
 from typing import Optional, List, Dict, Any, Literal
-from datetime import datetime
+from datetime import datetime, UTC
 from enum import Enum
 from uuid import uuid4, UUID
 
@@ -52,16 +52,35 @@ class TopicCategory(str, Enum):
     OTHER = "other"
 
 
+class InstagramContentType(str, Enum):
+    REEL = "reel"
+    CAROUSEL = "carousel"
+    SINGLE_IMAGE = "single_image"
+    UNKNOWN = "unknown"
+
+
+class CarouselImageCategory(str, Enum):
+    TERMINAL = "terminal"
+    CODE = "code"
+    CONFIG = "config"
+    UI_RESULT = "ui_result"
+    SCREENSHOT = "screenshot"
+    REFERENCE = "reference"
+    OTHER = "other"
+
+
 class ExtractedContent(BaseModel):
     url: HttpUrl
     title: str
     raw_text: str
     markdown: str
     metadata: Dict[str, Any] = Field(default_factory=dict)
-    extracted_at: datetime = Field(default_factory=datetime.utcnow)
+    extracted_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     extraction_strategy: str = "webfetch"
     content_length: int = 0
     word_count: int = 0
+    content_type: InstagramContentType = InstagramContentType.UNKNOWN
+    transcript_quality: str = "unknown"
 
 
 class DocumentChunk(BaseModel):
@@ -84,7 +103,7 @@ class EnrichedEntity(BaseModel):
     source_url: str
     source_text: str = ""  # Full source transcript for LLM context
     confidence: float = 0.0
-    mentioned_at: datetime = Field(default_factory=datetime.utcnow)
+    mentioned_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
 class ExtractedRelationship(BaseModel):
@@ -106,7 +125,7 @@ class CategorizedItem(BaseModel):
     summary: str = ""
     key_points: List[str] = Field(default_factory=list)
     relationships: List[ExtractedRelationship] = Field(default_factory=list)
-    categorized_at: datetime = Field(default_factory=datetime.utcnow)
+    categorized_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
 class ProcessingResult(BaseModel):

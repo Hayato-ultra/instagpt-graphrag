@@ -8,7 +8,7 @@ Every field from the original models has a destination:
   4. JSONB array for dynamic/unpredictable data
 """
 import enum
-from datetime import datetime
+from datetime import datetime, UTC
 from typing import Optional
 
 from sqlalchemy import (
@@ -134,8 +134,8 @@ class Content(Base):
     duration = Column(Float, default=0.0)
     # Preserve any extra metadata from extraction
     metadata_ = Column("metadata", JSONB, default=dict)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(UTC), nullable=False)
+    updated_at = Column(DateTime, default=lambda: datetime.now(UTC), onupdate=datetime.utcnow)
 
     # Relationships
     chunks = relationship("ContentChunk", back_populates="content", cascade="all, delete-orphan")
@@ -164,7 +164,7 @@ class ContentChunk(Base):
     header_path = Column(Text, default="")
     header_level = Column(Integer, default=0)
     metadata_ = Column("metadata", JSONB, default=dict)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime, default=lambda: datetime.now(UTC), nullable=False)
 
     # Relationships
     content = relationship("Content", back_populates="chunks")
@@ -216,8 +216,8 @@ class Entity(Base):
     source_text = Column(Text, default="")  # Full source transcript for LLM context
     # Preserve raw enrichment data
     metadata_ = Column("metadata", JSONB, default=dict)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(UTC), nullable=False)
+    updated_at = Column(DateTime, default=lambda: datetime.now(UTC), onupdate=datetime.utcnow)
 
     # Relationships
     entity_type = relationship("EntityTypeRow", back_populates="entities")
@@ -271,7 +271,7 @@ class Topic(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     name = Column(String(50), nullable=False, unique=True)
     description = Column(Text, default="")
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime, default=lambda: datetime.now(UTC), nullable=False)
 
     # Relationships
     subtopics = relationship("SubTopic", back_populates="topic", cascade="all, delete-orphan")
@@ -289,7 +289,7 @@ class SubTopic(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     topic_id = Column(Integer, ForeignKey("topics.id", ondelete="CASCADE"), nullable=False, index=True)
     name = Column(String(100), nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime, default=lambda: datetime.now(UTC), nullable=False)
 
     # Relationships
     topic = relationship("Topic", back_populates="subtopics")
@@ -316,7 +316,7 @@ class ContentEntity(Base):
     relevance = Column(Float, default=1.0)  # How relevant this entity is to this content
     chunk_id = Column(String(36), ForeignKey("content_chunks.id", ondelete="SET NULL"), nullable=True)
     metadata_ = Column("metadata", JSONB, default=dict)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime, default=lambda: datetime.now(UTC), nullable=False)
 
     # Relationships
     content = relationship("Content", back_populates="content_entities")
@@ -348,7 +348,7 @@ class ContentTopic(Base):
     type_confidence = Column(Float, default=0.0)
     tags = Column(JSONB, default=list)  # List[str]
     metadata_ = Column("metadata", JSONB, default=dict)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime, default=lambda: datetime.now(UTC), nullable=False)
 
     # Relationships
     content = relationship("Content", back_populates="content_topics")
@@ -379,7 +379,7 @@ class EntityRelationship(Base):
     confidence = Column(Float, default=0.0)
     source_content_id = Column(String(36), ForeignKey("content.id", ondelete="SET NULL"), nullable=True)
     metadata_ = Column("metadata", JSONB, default=dict)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime, default=lambda: datetime.now(UTC), nullable=False)
 
     # Relationships
     source_entity = relationship("Entity", foreign_keys=[source_entity_id], back_populates="source_relationships")
@@ -404,7 +404,7 @@ class EntitySimilarity(Base):
     entity_a_id = Column(String(36), ForeignKey("entities.id", ondelete="CASCADE"), nullable=False, index=True)
     entity_b_id = Column(String(36), ForeignKey("entities.id", ondelete="CASCADE"), nullable=False, index=True)
     similarity_score = Column(Float, nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime, default=lambda: datetime.now(UTC), nullable=False)
 
     # Relationships
     entity_a = relationship("Entity", foreign_keys=[entity_a_id], back_populates="similar_from")
@@ -433,7 +433,7 @@ class AnalysisJob(Base):
     error = Column(Text, nullable=True)
     # Preserve full processing result as JSONB
     result_metadata = Column(JSONB, default=dict)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime, default=lambda: datetime.now(UTC), nullable=False)
     completed_at = Column(DateTime, nullable=True)
 
     # Relationships
@@ -460,7 +460,7 @@ class EpisodicMemory(Base):
     content = Column(Text, default="")
     source_url = Column(Text, default="")
     content_type = Column(String(50), default="")
-    timestamp = Column(DateTime, default=datetime.utcnow, nullable=False)
+    timestamp = Column(DateTime, default=lambda: datetime.now(UTC), nullable=False)
     metadata_ = Column("metadata", JSONB, default=dict)
 
     # Relationships
@@ -482,7 +482,7 @@ class WebReference(Base):
     url = Column(Text, nullable=False)
     snippet = Column(Text, default="")
     source = Column(String(50), default="")
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime, default=lambda: datetime.now(UTC), nullable=False)
 
     # Relationships
     entity = relationship("Entity", back_populates="web_references")
@@ -504,7 +504,7 @@ class SimilarTool(Base):
     name = Column(String(255), nullable=False)
     description = Column(Text, default="")
     url = Column(Text, default="")
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime, default=lambda: datetime.now(UTC), nullable=False)
 
     # Relationships
     entity = relationship("Entity", back_populates="similar_tools")
@@ -530,7 +530,7 @@ class OutputFile(Base):
     file_path = Column(Text, nullable=False)
     file_type = Column(String(20), nullable=False)  # "markdown", "json"
     file_size = Column(Integer, default=0)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime, default=lambda: datetime.now(UTC), nullable=False)
 
     # Relationships
     content = relationship("Content", back_populates="outputs")
