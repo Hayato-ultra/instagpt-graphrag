@@ -789,11 +789,21 @@ class EnrichmentPipeline:
             name = ent_data.get("name", name_lower)
             name_lower_check = name.lower()
             
-            # Check if entity name appears in caption (exact or as substring)
-            in_caption = name_lower_check in caption_text
+            # Check if entity name appears in caption (word-boundary matching)
+            # Use \b to match whole words only
+            import re as re_module
+            if ' ' in name_lower_check:
+                # For multi-word entities, check if all words appear together
+                words = name_lower_check.split()
+                caption_pattern = r'\b' + r'\s+'.join(re_module.escape(w) for w in words) + r'\b'
+            else:
+                # For single-word entities, use word boundary
+                caption_pattern = r'\b' + re_module.escape(name_lower_check) + r'\b'
+            
+            in_caption = bool(re_module.search(caption_pattern, caption_text))
             
             # Check if entity name appears in OCR but not caption
-            in_ocr = name_lower_check in ocr_text if ocr_text else False
+            in_ocr = bool(re_module.search(caption_pattern, ocr_text)) if ocr_text else False
             
             if in_caption:
                 validated[name_lower] = ent_data
@@ -804,6 +814,19 @@ class EnrichmentPipeline:
                 # Entity not found in either - keep with low confidence
                 ent_data["confidence"] = ent_data.get("confidence", 0.8) * 0.5
                 validated[name_lower] = ent_data
+        
+        # Remove entities that are substrings of other entities
+        # e.g., "claude" should be removed if "claude code" or "claude mem" exists
+        final_validated = {}
+        for name_lower, ent_data in validated.items():
+            is_substring = False
+            for other_name in validated:
+                if name_lower != other_name and name_lower in other_name:
+                    is_substring = True
+                    logger.info(f"Rejecting substring entity '{ent_data.get('name', name_lower)}' (substring of '{other_name}')")
+                    break
+            if not is_substring:
+                final_validated[name_lower] = ent_data
         
         if len(validated) >= 3:
             logger.info(f"Validated {len(validated)} entities from {len(entity_map)} total")
@@ -1183,11 +1206,20 @@ class EnrichmentPipeline:
                     name = ent_data["name"]
                     name_lower_check = name.lower()
                     
-                    # Check if entity name appears in caption (exact or as substring)
-                    in_caption = name_lower_check in caption_text
+                    # Check if entity name appears in caption (word-boundary matching)
+                    import re as re_module
+                    if ' ' in name_lower_check:
+                        # For multi-word entities, check if all words appear together
+                        words = name_lower_check.split()
+                        caption_pattern = r'\b' + r'\s+'.join(re_module.escape(w) for w in words) + r'\b'
+                    else:
+                        # For single-word entities, use word boundary
+                        caption_pattern = r'\b' + re_module.escape(name_lower_check) + r'\b'
+                    
+                    in_caption = bool(re_module.search(caption_pattern, caption_text))
                     
                     # Check if entity name appears in OCR but not caption
-                    in_ocr = name_lower_check in ocr_text if ocr_text else False
+                    in_ocr = bool(re_module.search(caption_pattern, ocr_text)) if ocr_text else False
                     
                     if in_caption:
                         validated_map[name_lower] = ent_data
@@ -1199,8 +1231,20 @@ class EnrichmentPipeline:
                         ent_data["confidence"] *= 0.5
                         validated_map[name_lower] = ent_data
                 
-                if len(validated_map) >= 3:
-                    entity_map = validated_map
+                # Remove entities that are substrings of other entities
+                final_validated = {}
+                for name_lower, ent_data in validated_map.items():
+                    is_substring = False
+                    for other_name in validated_map:
+                        if name_lower != other_name and name_lower in other_name:
+                            is_substring = True
+                            logger.info(f"Rejecting substring entity '{ent_data.get('name', name_lower)}' (substring of '{other_name}')")
+                            break
+                    if not is_substring:
+                        final_validated[name_lower] = ent_data
+                
+                if len(final_validated) >= 3:
+                    entity_map = final_validated
                     logger.info(f"Validated {len(entity_map)} entities against transcript")
                 else:
                     logger.warning(f"Validation rejected too many entities, keeping all {len(entity_map)}")
