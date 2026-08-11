@@ -39,9 +39,14 @@ class MarkdownGenerator:
         md.append("## Summary")
         md.append("")
         summary_parts = []
+        seen_summaries = set()
         for item in items:
             if item.summary:
-                summary_parts.append(item.summary)
+                # Deduplicate similar summaries (check first 80 chars)
+                summary_key = item.summary[:80].lower().strip()
+                if summary_key not in seen_summaries:
+                    seen_summaries.add(summary_key)
+                    summary_parts.append(item.summary)
         if summary_parts:
             md.append(" ".join(summary_parts))
         else:
