@@ -749,6 +749,9 @@ class EnrichmentPipeline:
         if not entity_map:
             return [], [], []
 
+        # Validate entities against transcript - reject OCR-only entities
+        entity_map = self._validate_entity_map(entity_map, chunks)
+
         searched = await self._search_entities_concurrent(entity_map)
         descriptions = await self._generate_descriptions_batch(searched)
         enriched = self._assemble_enriched(searched, descriptions)
@@ -764,6 +767,51 @@ class EnrichmentPipeline:
 
         return enriched, relationships, steps
     
+    def _validate_entity_map(self, entity_map: dict, chunks: list[DocumentChunk]) -> dict:
+        """Validate entity map against transcript - reject entities not in transcript."""
+        # Get caption text (primary source)
+        caption_chunks = [c for c in chunks if any(marker in c.text for marker in 
+            ["[Caption]", "[Audio Transcript]", "[English Transcript]", "[Hindi Translation]"])]
+        
+        # Get OCR text (secondary source with noise)
+        ocr_chunks = [c for c in chunks if any(marker in c.text for marker in 
+            ["[Video Content]", "[Video Frame OCR]", "[Carousel Image"])]
+        
+        if not caption_chunks:
+            # No caption available - keep all entities
+            return entity_map
+        
+        caption_text = "\n".join(c.text.lower() for c in caption_chunks)
+        ocr_text = "\n".join(c.text.lower() for c in ocr_chunks) if ocr_chunks else ""
+        
+        validated = {}
+        for name_lower, ent_data in entity_map.items():
+            name = ent_data.get("name", name_lower)
+            name_lower_check = name.lower()
+            
+            # Check if entity name appears in caption (exact or as substring)
+            in_caption = name_lower_check in caption_text
+            
+            # Check if entity name appears in OCR but not caption
+            in_ocr = name_lower_check in ocr_text if ocr_text else False
+            
+            if in_caption:
+                validated[name_lower] = ent_data
+            elif in_ocr and not in_caption:
+                # OCR-only entity - reject if we have enough caption entities
+                logger.info(f"Rejecting OCR-only entity '{name}' (not in transcript)")
+            else:
+                # Entity not found in either - keep with low confidence
+                ent_data["confidence"] = ent_data.get("confidence", 0.8) * 0.5
+                validated[name_lower] = ent_data
+        
+        if len(validated) >= 3:
+            logger.info(f"Validated {len(validated)} entities from {len(entity_map)} total")
+            return validated
+        else:
+            logger.warning(f"Validation rejected too many entities, keeping all {len(entity_map)}")
+            return entity_map
+
     def _get_cached_search(self, entity_name: str) -> list | None:
         """Get cached search results if still fresh."""
         import time
@@ -941,17 +989,23 @@ class EnrichmentPipeline:
 
     async def _llm_extract_entities(self, chunks: list[DocumentChunk]) -> dict:
         """Use LLM to extract entities when pattern detection finds too few."""
-        # Prioritize chunks with video/OCR content (most relevant for Reels)
-        video_chunks = [c for c in chunks if any(marker in c.text for marker in 
-            ["[Video Content]", "[Video Frame OCR]", "[Audio Transcript]", 
-             "[English Transcript]", "[Hindi Translation]", "[Carousel Image"])]
+        # Prioritize caption/text chunks over OCR (OCR has noise from other reels)
+        caption_chunks = [c for c in chunks if any(marker in c.text for marker in 
+            ["[Caption]", "[Audio Transcript]", "[English Transcript]", "[Hindi Translation]"])]
         
-        if video_chunks:
-            # Use video chunks first, they contain the actual screen recording content
-            combined_text = "\n\n".join(c.text for c in video_chunks[:5])
+        # Also get video/OCR chunks as secondary source
+        video_chunks = [c for c in chunks if any(marker in c.text for marker in 
+            ["[Video Content]", "[Video Frame OCR]", "[Carousel Image"])]
+        
+        # Use caption first, then video chunks
+        if caption_chunks:
+            combined_text = "\n\n".join(c.text for c in caption_chunks[:3])
+            logger.info(f"LLM entity extraction using {len(caption_chunks)} caption chunks")
+        elif video_chunks:
+            combined_text = "\n\n".join(c.text for c in video_chunks[:3])
             logger.info(f"LLM entity extraction using {len(video_chunks)} video chunks")
         else:
-            combined_text = "\n\n".join(c.text for c in chunks[:5])
+            combined_text = "\n\n".join(c.text for c in chunks[:3])
         
         if len(combined_text.strip()) < 50:
             return {}
@@ -1119,6 +1173,38 @@ class EnrichmentPipeline:
                 if len(entity_map) >= 8:
                     break
 
+            # Validate entities against transcript - reject OCR-only entities
+            if caption_chunks and len(caption_chunks) >= 1:
+                caption_text = "\n".join(c.text.lower() for c in caption_chunks)
+                ocr_text = "\n".join(c.text.lower() for c in video_chunks) if video_chunks else ""
+                
+                validated_map = {}
+                for name_lower, ent_data in entity_map.items():
+                    name = ent_data["name"]
+                    name_lower_check = name.lower()
+                    
+                    # Check if entity name appears in caption (exact or as substring)
+                    in_caption = name_lower_check in caption_text
+                    
+                    # Check if entity name appears in OCR but not caption
+                    in_ocr = name_lower_check in ocr_text if ocr_text else False
+                    
+                    if in_caption:
+                        validated_map[name_lower] = ent_data
+                    elif in_ocr and not in_caption:
+                        # OCR-only entity - reject if we have enough caption entities
+                        logger.info(f"Rejecting OCR-only entity '{name}' (not in transcript)")
+                    else:
+                        # Entity not found in either - keep with low confidence
+                        ent_data["confidence"] *= 0.5
+                        validated_map[name_lower] = ent_data
+                
+                if len(validated_map) >= 3:
+                    entity_map = validated_map
+                    logger.info(f"Validated {len(entity_map)} entities against transcript")
+                else:
+                    logger.warning(f"Validation rejected too many entities, keeping all {len(entity_map)}")
+
             logger.info(f"LLM extracted {len(entity_map)} entities")
             return entity_map
 
@@ -1255,15 +1341,11 @@ class EnrichmentPipeline:
 
         transcript_quality = self._detect_transcript_quality(all_text)
 
-        # Extract transcript portion only
+        # Use FULL text for validation (caption + audio + OCR)
+        # The caption is often the primary source, not just the audio transcript
         primary_text = all_text
-        for marker in ["[Audio Transcript]:", "[Caption]:", "[Carousel Image"]:
-            idx = all_text.find(marker)
-            if idx != -1:
-                primary_text = all_text[idx:]
-                break
 
-        # Also check OCR text
+        # Also check OCR text separately
         ocr_text = ""
         for marker in ["[Video Frame OCR]:", "[Carousel Image"]:
             idx = all_text.find(marker)
@@ -1645,10 +1727,11 @@ class EnrichmentPipeline:
                         if desc:
                             descriptions.append(f"{name}: {desc}" if name else desc)
             
-            # Format 3: {"response": {...}} - single entity
+            # Format 3: {"response": {...}} - single entity (Ollama sometimes returns this)
             elif "response" in data:
                 resp = data["response"]
                 if isinstance(resp, dict):
+                    # Extract the description from the response
                     desc = resp.get("description", resp.get("source_content", ""))
                     name = resp.get("name", "")
                     if desc:
@@ -1658,9 +1741,43 @@ class EnrichmentPipeline:
             elif "description" in data:
                 descriptions.append(data["description"])
 
+            # Format 5: {"Claude Mem": "...", "Headroom": "..."} - key-value format
+            elif len(data) == len(batch) and all(isinstance(v, str) for v in data.values()):
+                # Match keys to batch entities by name
+                for ent in batch:
+                    name = ent["name"]
+                    if name in data:
+                        descriptions.append(f"{name}: {data[name]}")
+
             # Validate count matches batch
             if len(descriptions) == len(batch):
                 return descriptions
+
+            # If single entity response, try to match to batch
+            if len(descriptions) == 1 and len(batch) > 1:
+                logger.info("Single entity response from LLM, requesting remaining descriptions")
+                # Find which entity was described
+                described_name = None
+                if descriptions[0]:
+                    # Try to extract name from description
+                    for ent in batch:
+                        if ent["name"].lower() in descriptions[0].lower():
+                            described_name = ent["name"]
+                            break
+                
+                # Request descriptions for remaining entities one by one
+                remaining = [e for e in batch if e["name"] != described_name]
+                if remaining:
+                    for ent in remaining:
+                        try:
+                            single_desc = await self._llm_describe_single(ent)
+                            descriptions.append(single_desc)
+                        except Exception as e:
+                            logger.warning(f"Failed to describe {ent['name']}: {e}")
+                            descriptions.append(f"{ent['name']} is mentioned in the tutorial.")
+                
+                if len(descriptions) == len(batch):
+                    return descriptions
 
             # If count mismatch, pad with fallbacks
             logger.warning(
@@ -1697,6 +1814,40 @@ class EnrichmentPipeline:
                 f"{e['name']} is a {e['type']} mentioned in the source content."
                 for e in batch
             ]
+
+    async def _llm_describe_single(self, entity: dict) -> str:
+        """Generate description for a single entity."""
+        source_text = entity.get("source_text", "")[:2000]
+        
+        prompt = (
+            "You are analyzing content from an Instagram reel/tutorial.\n\n"
+            f"Entity: {entity['name']}\n"
+            f"Type: {entity['type']}\n"
+            f"Source Content:\n{source_text}\n\n"
+            "Provide a DETAILED description of WHAT THIS ENTITY DOES IN THIS SPECIFIC CONTENT.\n\n"
+            "RULES:\n"
+            "- Describe the ROLE this entity plays in the content\n"
+            "- Include SPECIFIC DETAILS mentioned: numbers, features, capabilities\n"
+            "- Describe the PROBLEM this entity solves in the context\n"
+            "- Do NOT give generic definitions\n"
+            "- Use ONLY the source content\n"
+            "- Write 2-3 sentences\n\n"
+            "Return ONLY the description text, no JSON."
+        )
+        
+        try:
+            result = await self.llm.chat_completion(
+                messages=[
+                    {"role": "system", "content": "You are analyzing a tutorial/reel transcript."},
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0.3,
+                max_tokens=300,
+            )
+            return result["content"].strip()[:300]
+        except Exception as e:
+            logger.warning(f"Single entity description failed: {e}")
+            return f"{entity['name']} is mentioned in the tutorial."
 
     async def _extract_relationships(
         self, entities: list[EnrichedEntity], chunks: list[DocumentChunk]
