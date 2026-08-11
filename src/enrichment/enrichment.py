@@ -866,22 +866,47 @@ class EnrichmentPipeline:
             content = result["content"].strip()
             logger.debug(f"Step extraction raw response: {content[:500]}")
             
-            # Robust JSON parsing
-            json_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", content, re.DOTALL)
+            # Robust JSON parsing - handle both { } and [ ] formats
+            json_match = re.search(r"```(?:json)?\s*(\{.*?\}|\[.*?\])\s*```", content, re.DOTALL)
             if json_match:
                 content = json_match.group(1)
-            elif not content.startswith("{"):
+            elif content.startswith("{"):
                 brace_start = content.find("{")
                 brace_end = content.rfind("}")
                 if brace_start != -1 and brace_end != -1:
                     content = content[brace_start:brace_end + 1]
+            elif content.startswith("["):
+                bracket_start = content.find("[")
+                bracket_end = content.rfind("]")
+                if bracket_start != -1 and bracket_end != -1:
+                    content = content[bracket_start:bracket_end + 1]
+            else:
+                # Try to find either { or [
+                brace_start = content.find("{")
+                bracket_start = content.find("[")
+                if brace_start != -1 and (bracket_start == -1 or brace_start < bracket_start):
+                    brace_end = content.rfind("}")
+                    if brace_end != -1:
+                        content = content[brace_start:brace_end + 1]
+                elif bracket_start != -1:
+                    bracket_end = content.rfind("]")
+                    if bracket_end != -1:
+                        content = content[bracket_start:bracket_end + 1]
             
             if not content:
                 logger.warning("Step extraction: empty response from LLM")
                 return []
             
             data = json.loads(content)
-            steps = data.get("steps", [])
+            
+            # Handle both formats: {"steps": [...]} and [...]
+            if isinstance(data, list):
+                steps = data
+            elif isinstance(data, dict):
+                steps = data.get("steps", [])
+            else:
+                steps = []
+            
             if steps:
                 logger.info(f"Extracted {len(steps)} steps from content")
             return steps
@@ -1249,17 +1274,27 @@ class EnrichmentPipeline:
         validated = []
         for entity in entities:
             name_lower = entity.name.lower()
-            # Check if entity name appears in transcript or OCR
+            name_words = name_lower.split()
+            
+            # Check exact match in transcript or OCR
             in_transcript = name_lower in primary_text.lower()
             in_ocr = name_lower in ocr_text.lower() if ocr_text else False
+            
+            # Also check partial word match (e.g., "OmniRoute" matches "omniroute" in OCR)
+            in_transcript_partial = any(w in primary_text.lower() for w in name_words if len(w) > 3)
+            in_ocr_partial = any(w in ocr_text.lower() for w in name_words if len(w) > 3) if ocr_text else False
 
-            if in_transcript or in_ocr:
+            if in_transcript or in_ocr or in_transcript_partial or in_ocr_partial:
                 entity.confidence = min(entity.confidence + 0.1, 1.0)
                 validated.append(entity)
             elif transcript_quality in ["real_content", "no_actions"]:
-                # Strict: reject entities not found in source when we have content
-                # (no_actions means Hinglish - still has real content, just in Hindi)
-                logger.debug(f"Rejected entity '{entity.name}' - not found in transcript/OCR")
+                # Check if entity appears in source_text (full content including OCR)
+                source_lower = entity.source_text.lower() if hasattr(entity, 'source_text') else ""
+                if any(w in source_lower for w in name_words if len(w) > 3):
+                    entity.confidence = min(entity.confidence + 0.05, 1.0)
+                    validated.append(entity)
+                else:
+                    logger.debug(f"Rejected entity '{entity.name}' - not found in transcript/OCR")
             else:
                 # No good transcript - keep with reduced confidence
                 entity.confidence *= 0.5
@@ -1530,22 +1565,23 @@ class EnrichmentPipeline:
 
         prompt = (
             "You are analyzing content from an Instagram reel/tutorial.\n\n"
-            "For each entity, describe WHAT IT DOES IN THIS SPECIFIC CONTENT — "
-            "not what the entity is in general.\n\n"
+            "For each entity, provide a DETAILED description of WHAT IT DOES IN THIS SPECIFIC CONTENT.\n\n"
             "RULES:\n"
-            "- Describe the ROLE this entity plays in the content (e.g., 'used to create the project', 'installed for styling')\n"
-            "- Describe the STEPS or ACTIONS involving this entity\n"
+            "- Describe the ROLE this entity plays in the content\n"
+            "- Include SPECIFIC DETAILS mentioned: numbers, features, capabilities, pricing\n"
             "- Describe the PROBLEM this entity solves in the context\n"
+            "- Include any STEPS or COMMANDS involving this entity\n"
             "- Do NOT give generic definitions (e.g., do NOT say 'React is a JavaScript library')\n"
             "- Do NOT use web search knowledge — use ONLY the source content\n"
-            "- If the source doesn't mention enough about this entity, say 'mentioned in the tutorial'\n\n"
-            "The description should answer: What does this entity DO in this content?\n\n"
+            "- If the source doesn't mention enough about this entity, say 'mentioned in the tutorial'\n"
+            "- Write 2-4 sentences per entity with specific details from the content\n\n"
+            "The description should answer: What does this entity DO in this content? What specific features/details are mentioned?\n\n"
             f"Return a JSON object with a \"descriptions\" array containing "
             f"exactly {len(batch)} strings, in the same order as the entities.\n\n"
             f"Example:\n"
             f"Entity: Vite\n"
-            f'Source: "Open terminal, type npm create vite, select React, then JavaScript"\n'
-            f'Description: "Vite is the build tool used to scaffold the React project. The video shows running npm create vite to generate the project structure."\n\n'
+            f'Source: "Open terminal, type npm create vite, select React, then JavaScript. Vite gives you hot module replacement and lightning fast builds."\n'
+            f'Description: "Vite is the build tool used to scaffold the React project. The video shows running npm create vite to generate the project structure. It provides hot module replacement and lightning fast builds for development."\n\n'
             f"Entities:\n{entities_text}\n\n"
             "Return ONLY valid JSON."
         )
@@ -1587,17 +1623,40 @@ class EnrichmentPipeline:
                     content = content[brace_start:brace_end + 1]
 
             data = json.loads(content)
-            descriptions = data.get("descriptions", [])
-
-            # Handle Ollama returning dicts instead of strings
-            normalized = []
-            for d in descriptions:
-                if isinstance(d, dict):
-                    # Extract the description text from dict
-                    normalized.append(d.get("description", d.get("summary", str(d))))
-                else:
-                    normalized.append(str(d))
-            descriptions = normalized
+            
+            # Handle multiple JSON formats from LLM
+            descriptions = []
+            
+            # Format 1: {"descriptions": ["desc1", "desc2"]}
+            if "descriptions" in data:
+                raw = data["descriptions"]
+                for d in raw:
+                    if isinstance(d, dict):
+                        descriptions.append(d.get("description", d.get("summary", str(d))))
+                    else:
+                        descriptions.append(str(d))
+            
+            # Format 2: {"entities": [{"name": "...", "description": "..."}]}
+            elif "entities" in data:
+                for ent in data["entities"]:
+                    if isinstance(ent, dict):
+                        desc = ent.get("description", ent.get("summary", ""))
+                        name = ent.get("name", "")
+                        if desc:
+                            descriptions.append(f"{name}: {desc}" if name else desc)
+            
+            # Format 3: {"response": {...}} - single entity
+            elif "response" in data:
+                resp = data["response"]
+                if isinstance(resp, dict):
+                    desc = resp.get("description", resp.get("source_content", ""))
+                    name = resp.get("name", "")
+                    if desc:
+                        descriptions.append(f"{name}: {desc}"[:300] if name else desc[:300])
+            
+            # Format 4: {"name": "...", "description": "..."} - top level
+            elif "description" in data:
+                descriptions.append(data["description"])
 
             # Validate count matches batch
             if len(descriptions) == len(batch):
