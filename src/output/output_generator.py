@@ -77,7 +77,7 @@ class MarkdownGenerator:
             md.append("")
             
             for item in topic_items:
-                md.append(self._render_item(item))
+                md.append(self._render_item(item, source_url))
                 md.append("---")
                 md.append("")
         
@@ -130,7 +130,7 @@ class MarkdownGenerator:
             grouped[sub].append(item)
         return grouped
     
-    def _render_item(self, item: CategorizedItem) -> str:
+    def _render_item(self, item: CategorizedItem, source_url: str = "") -> str:
         lines = []
         
         # Header with anchor
@@ -175,6 +175,11 @@ class MarkdownGenerator:
         if item.tags:
             tags_str = ", ".join(f"`{tag}`" for tag in item.tags[:10])
             lines.append(f"**Tags:** {tags_str}")
+            lines.append("")
+        
+        # Source link at the end of each entity section
+        if source_url:
+            lines.append(f"**Source:** [{source_url}]({source_url})")
             lines.append("")
         
         return "\n".join(lines)
