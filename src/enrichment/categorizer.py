@@ -97,27 +97,118 @@ class Categorizer:
         self.model = None  # Let LLMClient use configured provider's model
 
     async def categorize(self, entities: list[EnrichedEntity]) -> list[CategorizedItem]:
-        """Categorize all entities with concurrent LLM calls."""
+        """Categorize all entities with batched LLM calls for speed."""
         if not entities:
             return []
 
-        semaphore = asyncio.Semaphore(5)
-
-        async def _run(entity: EnrichedEntity) -> CategorizedItem:
-            async with semaphore:
-                return await self._categorize_entity(entity)
-
-        results = await asyncio.gather(*[_run(e) for e in entities], return_exceptions=True)
-
+        # Batch entities to reduce LLM calls (batch of 5)
+        BATCH_SIZE = 5
         categorized = []
-        for entity, result in zip(entities, results):
-            if isinstance(result, Exception):
-                logger.warning(f"Categorization failed for {entity.name}: {result}")
-                categorized.append(self._fallback_categorize(entity))
-            else:
-                categorized.append(result)
+
+        for i in range(0, len(entities), BATCH_SIZE):
+            batch = entities[i:i+BATCH_SIZE]
+            batch_results = await self._categorize_batch(batch)
+            categorized.extend(batch_results)
 
         return categorized
+
+    async def _categorize_batch(self, entities: list[EnrichedEntity]) -> list[CategorizedItem]:
+        """Categorize a batch of entities in a single LLM call."""
+        if len(entities) == 1:
+            return [await self._categorize_entity(entities[0])]
+
+        topics = [t.value for t in TopicCategory]
+        content_type_defs = "\n".join(
+            f"- {k.value}: {v}" for k, v in CONTENT_TYPE_DEFINITIONS.items()
+        )
+
+        entities_text = ""
+        for i, entity in enumerate(entities):
+            text = self._prepare_text(entity)
+            entities_text += f"\n[Entity {i+1}] {entity.name} ({entity.type.value})\n{text[:1000]}\n"
+
+        prompt = f"""Analyze these {len(entities)} entities from tutorial/reel content.
+For EACH entity, return a JSON object with these fields:
+
+1. "topic": ONE of [{", ".join(topics)}]
+2. "topic_confidence": float 0.0-1.0
+3. "subtopics": array of 1-3 strings
+4. "content_type": ONE of the content types below
+5. "type_confidence": float 0.0-1.0
+6. "summary": 2-3 sentences describing what PROBLEM this entity solves and what SOLUTION it provides
+7. "key_points": array of 3-5 key points describing specific STEPS, COMMANDS, or FEATURES
+
+Content type definitions:
+{content_type_defs}
+
+Entities to analyze:
+{entities_text}
+
+RULES:
+- Focus on WHAT EACH ENTITY DOES IN THIS CONTENT
+- Describe the PROBLEM → SOLUTION flow for each
+- Include specific commands, tools, and features mentioned
+- Key points should be actionable steps or insights
+- Return a JSON object with "results" array containing {len(entities)} objects, one per entity
+
+Return ONLY valid JSON."""
+
+        result = await self.llm.chat_completion(
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are analyzing tutorial/reel content to understand each entity's PURPOSE and SOLUTION. "
+                        "For each entity, describe: What problem does it solve? What steps are shown? "
+                        "What tools are used? Return valid JSON with results array."
+                    ),
+                },
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.2,
+            max_tokens=1500 * len(entities),
+            response_format={"type": "json_object"},
+        )
+
+        content = result["content"].strip()
+
+        # Parse JSON
+        json_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", content, re.DOTALL)
+        if json_match:
+            content = json_match.group(1)
+        elif not content.startswith("{"):
+            brace_start = content.find("{")
+            brace_end = content.rfind("}")
+            if brace_start != -1 and brace_end != -1:
+                content = content[brace_start:brace_end + 1]
+
+        try:
+            data = json.loads(content)
+            results = data.get("results", [])
+
+            categorized = []
+            for i, entity in enumerate(entities):
+                if i < len(results):
+                    r = results[i]
+                    categorized.append(CategorizedItem(
+                        entity=entity,
+                        topic=TopicCategory(r.get("topic", "other")),
+                        topic_confidence=float(r.get("topic_confidence", 0.7)),
+                        content_type=ContentType(r.get("content_type", "tutorial")),
+                        type_confidence=float(r.get("type_confidence", 0.7)),
+                        summary=r.get("summary", ""),
+                        key_points=r.get("key_points", []),
+                        subtopics=r.get("subtopics", []),
+                        detailed_analysis=r.get("detailed_analysis", ""),
+                    ))
+                else:
+                    categorized.append(self._fallback_categorize(entity))
+
+            return categorized
+
+        except Exception as e:
+            logger.warning(f"Batch categorization failed: {e}")
+            return [self._fallback_categorize(e) for e in entities]
 
     async def _categorize_entity(self, entity: EnrichedEntity) -> CategorizedItem:
         """Categorize a single entity with one LLM call."""
