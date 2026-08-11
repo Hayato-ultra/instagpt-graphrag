@@ -802,18 +802,13 @@ class EnrichmentPipeline:
             
             in_caption = bool(re_module.search(caption_pattern, caption_text))
             
-            # Check if entity name appears in OCR but not caption
-            in_ocr = bool(re_module.search(caption_pattern, ocr_text)) if ocr_text else False
-            
+            # Only keep entities that appear in the caption
+            # Reject all OCR-only entities (OCR contains noise from other reels)
             if in_caption:
                 validated[name_lower] = ent_data
-            elif in_ocr and not in_caption:
-                # OCR-only entity - reject if we have enough caption entities
-                logger.info(f"Rejecting OCR-only entity '{name}' (not in transcript)")
             else:
-                # Entity not found in either - keep with low confidence
-                ent_data["confidence"] = ent_data.get("confidence", 0.8) * 0.5
-                validated[name_lower] = ent_data
+                # Entity not in caption - reject it
+                logger.info(f"Rejecting entity '{name}' (not in caption)")
         
         # Remove entities that are substrings of other entities
         # e.g., "claude" should be removed if "claude code" or "claude mem" exists
@@ -828,9 +823,9 @@ class EnrichmentPipeline:
             if not is_substring:
                 final_validated[name_lower] = ent_data
         
-        if len(validated) >= 3:
-            logger.info(f"Validated {len(validated)} entities from {len(entity_map)} total")
-            return validated
+        if len(final_validated) >= 3:
+            logger.info(f"Validated {len(final_validated)} entities from {len(entity_map)} total")
+            return final_validated
         else:
             logger.warning(f"Validation rejected too many entities, keeping all {len(entity_map)}")
             return entity_map
@@ -1218,18 +1213,13 @@ class EnrichmentPipeline:
                     
                     in_caption = bool(re_module.search(caption_pattern, caption_text))
                     
-                    # Check if entity name appears in OCR but not caption
-                    in_ocr = bool(re_module.search(caption_pattern, ocr_text)) if ocr_text else False
-                    
+                    # Only keep entities that appear in the caption
+                    # Reject all OCR-only entities (OCR contains noise from other reels)
                     if in_caption:
                         validated_map[name_lower] = ent_data
-                    elif in_ocr and not in_caption:
-                        # OCR-only entity - reject if we have enough caption entities
-                        logger.info(f"Rejecting OCR-only entity '{name}' (not in transcript)")
                     else:
-                        # Entity not found in either - keep with low confidence
-                        ent_data["confidence"] *= 0.5
-                        validated_map[name_lower] = ent_data
+                        # Entity not in caption - reject it
+                        logger.info(f"Rejecting entity '{name}' (not in caption)")
                 
                 # Remove entities that are substrings of other entities
                 final_validated = {}
