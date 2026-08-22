@@ -292,13 +292,14 @@ class VectorStore:
         query_vector: List[float],
         limit: int = 10,
         filter_type: Optional[str] = None,
+        filter_field: str = "type",
         score_threshold: float = 0.0
     ) -> List[Dict[str, Any]]:
         """Search for similar vectors."""
         query_filter = None
         if filter_type:
             query_filter = models.Filter(
-                must=[models.FieldCondition(key="type", match=models.MatchValue(value=filter_type))]
+                must=[models.FieldCondition(key=filter_field, match=models.MatchValue(value=filter_type))]
             )
         
         results = self.client.query_points(

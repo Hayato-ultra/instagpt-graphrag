@@ -149,6 +149,7 @@ class HybridSearcher:
             query_vector=embedding,
             limit=limit,
             filter_type="entity",
+            filter_field="node_type",
             score_threshold=0.3,
         )
         

@@ -594,21 +594,21 @@ class Neo4jGraphStore(GraphStore):
     
     async def search_entities(self, query_text: str, limit: int = 10) -> List[Dict]:
         """Full-text search on entities."""
-        query = """
-        CALL db.index.fulltext.queryNodes('entity_search', $query)
+        cypher = """
+        CALL db.index.fulltext.queryNodes('entity_search', $search_text)
         YIELD node, score
         RETURN node, score
-        LIMIT $limit
+        LIMIT $result_limit
         """
         async with self.driver.session() as session:
-            result = await session.run(query, query=query_text, limit=limit)
+            result = await session.run(cypher, search_text=query_text, result_limit=limit)
             records = await result.data()
-            result = []
+            items = []
             for r in records:
                 node = r["node"]
                 node_dict = {k: node[k] for k in node.keys()} if hasattr(node, 'keys') and not isinstance(node, dict) else dict(node) if not isinstance(node, dict) else node
-                result.append(node_dict)
-            return result
+                items.append(node_dict)
+            return items
     
     async def get_stats(self) -> Dict[str, Any]:
         """Get graph statistics."""
