@@ -6,7 +6,7 @@ NullRecorder is the no-op default used when no DB session is available.
 from __future__ import annotations
 
 import abc
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any
 
 from loguru import logger
@@ -111,7 +111,7 @@ class SQLPipelineRecorder(BaseRecorder):
         return {}
 
     async def heartbeat(self) -> None:
-        now = datetime.now(UTC)
+        now = datetime.utcnow()
         if (
             self._last_heartbeat is None
             or (now - self._last_heartbeat).total_seconds() > self.HEARTBEAT_INTERVAL_SECONDS

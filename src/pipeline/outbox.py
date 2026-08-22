@@ -239,7 +239,7 @@ async def persist_and_publish(
         embedding_version: embedding model version used for vectors.
     """
     counts = {"entities": 0, "relationships": 0, "chunks": 0}
-    from datetime import datetime, UTC
+    from datetime import datetime
 
     # 1. Persist entities (get-or-create by name, per source-of-truth rule).
     #    Uses FOR UPDATE locking to prevent concurrent workers from creating
@@ -256,7 +256,7 @@ async def persist_and_publish(
                 entity_type=etype,
                 description=e.description,
                 confidence=e.confidence,
-                extraction_timestamp=datetime.now(UTC),
+                extraction_timestamp=datetime.utcnow(),
                 pipeline_version=pipeline_version,
                 model_version=model_version,
                 embedding_version=embedding_version,

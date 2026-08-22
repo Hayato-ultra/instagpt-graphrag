@@ -4,7 +4,7 @@ Provides table partitioning for large tables to improve query performance.
 """
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 
 from loguru import logger
 
@@ -34,7 +34,7 @@ class TablePartitioner:
             List of created partition names.
         """
         created = []
-        now = datetime.now(UTC)
+        now = datetime.utcnow()
 
         for i in range(num_partitions):
             start = now + timedelta(days=i * interval_days)
@@ -73,7 +73,7 @@ class TablePartitioner:
             List of dropped partition names.
         """
         dropped = []
-        cutoff = datetime.now(UTC) - timedelta(days=keep_months * 30)
+        cutoff = datetime.utcnow() - timedelta(days=keep_months * 30)
 
         try:
             async with self.crud._session() as session:

@@ -4,7 +4,7 @@ Provides retention policies and cleanup for old data.
 """
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 
 from loguru import logger
 
@@ -28,7 +28,7 @@ class LifecycleManager:
 
         from src.database.models import Entity
 
-        cutoff = datetime.now(UTC).replace(tzinfo=None)
+        cutoff = datetime.utcnow().replace(tzinfo=None)
         count = 0
 
         async with crud._session() as session:
@@ -56,7 +56,7 @@ class LifecycleManager:
 
         from src.database.models import EpisodicMemory
 
-        cutoff = (datetime.now(UTC) - timedelta(days=self.episodic_retention_days)).replace(tzinfo=None)
+        cutoff = (datetime.utcnow() - timedelta(days=self.episodic_retention_days)).replace(tzinfo=None)
         count = 0
 
         async with crud._session() as session:
@@ -81,7 +81,7 @@ class LifecycleManager:
 
         from src.database.models import OutboxEvent
 
-        cutoff = (datetime.now(UTC) - timedelta(days=self.outbox_retention_days)).replace(tzinfo=None)
+        cutoff = (datetime.utcnow() - timedelta(days=self.outbox_retention_days)).replace(tzinfo=None)
         count = 0
 
         async with crud._session() as session:

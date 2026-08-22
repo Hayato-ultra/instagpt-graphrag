@@ -8,7 +8,7 @@ Runs as a reconciliation step against the PostgreSQL source of truth.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 
 from loguru import logger
 from sqlalchemy import func, select
@@ -40,7 +40,7 @@ async def cleanup_graph(
     Does NOT delete anything — only flags entities via metadata for human review.
     """
     result = CleanupResult()
-    cutoff = (datetime.now(UTC) - timedelta(days=stale_days)).replace(tzinfo=None)
+    cutoff = (datetime.utcnow() - timedelta(days=stale_days)).replace(tzinfo=None)
 
     # 1. Flag low-confidence entities
     stmt = select(Entity).where(
@@ -53,7 +53,7 @@ async def cleanup_graph(
         meta = entity.metadata_ or {}
         if "_cleanup_flag" not in meta:
             meta["_cleanup_flag"] = "low_confidence"
-            meta["_cleanup_at"] = datetime.now(UTC).isoformat()
+            meta["_cleanup_at"] = datetime.utcnow().isoformat()
             entity.metadata_ = meta
             result.flagged.append(f"low_confidence:{entity.name}")
 
@@ -65,7 +65,7 @@ async def cleanup_graph(
         meta = entity.metadata_ or {}
         if "_cleanup_flag" not in meta:
             meta["_cleanup_flag"] = "stale"
-            meta["_cleanup_at"] = datetime.now(UTC).isoformat()
+            meta["_cleanup_at"] = datetime.utcnow().isoformat()
             entity.metadata_ = meta
             result.flagged.append(f"stale:{entity.name}")
 
@@ -88,7 +88,7 @@ async def cleanup_graph(
         meta = entity.metadata_ or {}
         if "_cleanup_flag" not in meta:
             meta["_cleanup_flag"] = "isolated"
-            meta["_cleanup_at"] = datetime.now(UTC).isoformat()
+            meta["_cleanup_at"] = datetime.utcnow().isoformat()
             entity.metadata_ = meta
             result.flagged.append(f"isolated:{entity.name}")
 

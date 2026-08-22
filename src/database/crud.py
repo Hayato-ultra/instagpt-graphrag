@@ -3,7 +3,7 @@
 Provides methods to create, read, update, and delete records.
 All operations are async and use the SQLAlchemy session.
 """
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
 from sqlalchemy import and_, func, or_, select
@@ -115,7 +115,7 @@ class CRUDOperations:
         if content:
             content.summary = summary
             content.entities_count = entities_count
-            content.updated_at = datetime.now(UTC)
+            content.updated_at = datetime.utcnow()
             await self.session.flush()
         return content
 
@@ -272,7 +272,7 @@ class CRUDOperations:
             entity.version = version
         else:
             entity.version = (entity.version or 1) + 1
-        entity.updated_at = datetime.now(UTC)
+        entity.updated_at = datetime.utcnow()
         await self.session.flush()
         return entity
 
@@ -291,7 +291,7 @@ class CRUDOperations:
             entity.neo4j_id = neo4j_id
         if qdrant_id is not None:
             entity.qdrant_id = qdrant_id
-        entity.updated_at = datetime.now(UTC)
+        entity.updated_at = datetime.utcnow()
         await self.session.flush()
         return entity
 
@@ -406,7 +406,7 @@ class CRUDOperations:
         existing = result.scalar_one_or_none()
         if existing:
             existing.confidence = max(existing.confidence, confidence)
-            existing.updated_at = datetime.now(UTC) if hasattr(existing, "updated_at") else None
+            existing.updated_at = datetime.utcnow() if hasattr(existing, "updated_at") else None
             await self.session.flush()
             return existing
 
@@ -501,7 +501,7 @@ class CRUDOperations:
         if metadata:
             job.result_metadata = metadata
         if status in ("completed", "failed"):
-            job.completed_at = datetime.now(UTC)
+            job.completed_at = datetime.utcnow()
         await self.session.flush()
         return job
 
@@ -572,8 +572,8 @@ class CRUDOperations:
         if not job:
             return None
         job.status = JobStatus.PROCESSING
-        job.started_at = datetime.now(UTC)
-        job.heartbeat_at = datetime.now(UTC)
+        job.started_at = datetime.utcnow()
+        job.heartbeat_at = datetime.utcnow()
         await self.session.flush()
         return job
 
@@ -614,10 +614,10 @@ class CRUDOperations:
 
         step.status = status
         if status == StepStatus.RUNNING:
-            step.started_at = datetime.now(UTC)
+            step.started_at = datetime.utcnow()
             step.attempt += 1
         elif status == StepStatus.COMPLETED:
-            step.completed_at = datetime.now(UTC)
+            step.completed_at = datetime.utcnow()
         if checkpoint_data is not None:
             step.checkpoint_data = checkpoint_data
         if error is not None:
@@ -634,7 +634,7 @@ class CRUDOperations:
         if not job:
             return
         job.status = JobStatus.COMPLETED
-        job.completed_at = datetime.now(UTC)
+        job.completed_at = datetime.utcnow()
         await self.session.flush()
 
     async def fail_pipeline_job(
@@ -649,14 +649,14 @@ class CRUDOperations:
             return
         job.status = JobStatus.DEAD_LETTER if dead_letter else JobStatus.FAILED
         job.error = error
-        job.completed_at = datetime.now(UTC)
+        job.completed_at = datetime.utcnow()
         await self.session.flush()
 
     async def list_stuck_pipeline_jobs(
         self, stale_seconds: int = 600, limit: int = 50
     ) -> list[PipelineJob]:
         """Find jobs stuck in PROCESSING with an old heartbeat."""
-        cutoff = (datetime.now(UTC) - __import__("datetime").timedelta(seconds=stale_seconds)).replace(tzinfo=None)
+        cutoff = (datetime.utcnow() - __import__("datetime").timedelta(seconds=stale_seconds)).replace(tzinfo=None)
         result = await self.session.execute(
             select(PipelineJob).where(
                 PipelineJob.status == JobStatus.PROCESSING,
@@ -718,7 +718,7 @@ class CRUDOperations:
         )
         job = result.scalar_one_or_none()
         if job:
-            job.heartbeat_at = datetime.now(UTC)
+            job.heartbeat_at = datetime.utcnow()
             await self.session.flush()
 
     async def list_pipeline_jobs(
@@ -774,7 +774,7 @@ class CRUDOperations:
         Returns the claimed events so the caller can process the projection
         and then complete/fail each one.
         """
-        now = datetime.now(UTC)
+        now = datetime.utcnow()
         query = select(OutboxEvent).where(
             OutboxEvent.status == OutboxEventStatus.PENDING,
             (OutboxEvent.next_retry_at.is_(None)) | (OutboxEvent.next_retry_at <= now),
@@ -790,7 +790,7 @@ class CRUDOperations:
         events = list(result.scalars().all())
         for event in events:
             event.status = OutboxEventStatus.PROCESSING
-            event.processed_at = datetime.now(UTC)
+            event.processed_at = datetime.utcnow()
         await self.session.flush()
         return events
 
@@ -803,7 +803,7 @@ class CRUDOperations:
         if not event:
             return
         event.status = OutboxEventStatus.COMPLETED
-        event.processed_at = datetime.now(UTC)
+        event.processed_at = datetime.utcnow()
         event.last_error = None
         await self.session.flush()
 
@@ -825,11 +825,11 @@ class CRUDOperations:
             return None
         event.attempts += 1
         event.last_error = error
-        event.processed_at = datetime.now(UTC)
+        event.processed_at = datetime.utcnow()
         if requeue and event.attempts < event.max_attempts:
             event.status = OutboxEventStatus.PENDING
             backoff_seconds = min(300, 5 * (2 ** (event.attempts - 1)))
-            event.next_retry_at = datetime.now(UTC) + timedelta(seconds=backoff_seconds)
+            event.next_retry_at = datetime.utcnow() + timedelta(seconds=backoff_seconds)
         else:
             event.status = OutboxEventStatus.FAILED
             event.next_retry_at = None
@@ -1021,7 +1021,7 @@ class CRUDOperations:
 
         from src.database.models import EpisodicMemory
 
-        cutoff = (datetime.now(UTC) - timedelta(days=max_age_days)).replace(tzinfo=None)
+        cutoff = (datetime.utcnow() - timedelta(days=max_age_days)).replace(tzinfo=None)
         result = await self.session.execute(
             select(EpisodicMemory)
             .where(EpisodicMemory.timestamp < cutoff)
