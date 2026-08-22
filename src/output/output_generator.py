@@ -29,7 +29,19 @@ class MarkdownGenerator:
         
         # Step-by-step guide (if available)
         if steps:
-            md.append("## Step-by-Step Guide")
+            # Generate topic from main entities
+            if items:
+                main_entities = [item.entity.name for item in items[:3]]
+                if len(main_entities) == 1:
+                    topic = f"Using {main_entities[0]}"
+                elif len(main_entities) == 2:
+                    topic = f"Using {main_entities[0]} and {main_entities[1]}"
+                else:
+                    topic = f"Using {', '.join(main_entities[:-1])}, and {main_entities[-1]}"
+            else:
+                topic = "Key Steps"
+            
+            md.append(f"## Step-by-Step Guide: {topic}")
             md.append("")
             for i, step in enumerate(steps, 1):
                 md.append(f"{i}. {step}")
@@ -42,13 +54,23 @@ class MarkdownGenerator:
         seen_summaries = set()
         for item in items:
             if item.summary:
+                # Skip template text summaries
+                template_patterns = [
+                    "EntityType.", "in the source content", "mentioned in the source",
+                    "is a EntityType", "is a tool in", "is a framework in",
+                ]
+                is_template = any(p in item.summary.lower() for p in template_patterns)
+                if is_template:
+                    continue
                 # Deduplicate similar summaries (check first 80 chars)
                 summary_key = item.summary[:80].lower().strip()
                 if summary_key not in seen_summaries:
                     seen_summaries.add(summary_key)
                     summary_parts.append(item.summary)
         if summary_parts:
-            md.append(" ".join(summary_parts))
+            # Take only unique summaries, max 3 sentences
+            unique_summaries = list(dict.fromkeys(summary_parts))[:3]
+            md.append(" ".join(unique_summaries))
         else:
             md.append(f"Extracted {len(items)} items from the source.")
         md.append("")
@@ -93,28 +115,6 @@ class MarkdownGenerator:
             md.append(f"### {topic.value.replace('_', ' ').title()}")
             for item in topic_items:
                 md.append(f"- [{item.entity.name}](#{self._slugify(item.entity.name)}) (`{item.entity.type.value}`)")
-            md.append("")
-        
-        # Add websites found section
-        all_urls = []
-        seen_urls = set()
-        for item in items:
-            if item.entity.web_info:
-                for ref in item.entity.web_info:
-                    url = ref.get("url", "")
-                    if url and url not in seen_urls:
-                        seen_urls.add(url)
-                        all_urls.append({
-                            "url": url,
-                            "title": ref.get("title", url),
-                            "entity": item.entity.name
-                        })
-        
-        if all_urls:
-            md.append("## Websites Found in Video")
-            md.append("")
-            for url_info in all_urls:
-                md.append(f"- [{url_info['title']}]({url_info['url']}) (from {url_info['entity']})")
             md.append("")
         
         return "\n".join(md)
@@ -182,10 +182,8 @@ class MarkdownGenerator:
             lines.append(f"**Tags:** {tags_str}")
             lines.append("")
         
-        # Source link at the end of each entity section
-        if source_url:
-            lines.append(f"**Source:** [{source_url}]({source_url})")
-            lines.append("")
+        # Don't add source link at end of each entity section - it's redundant
+        # The source is already at the top of the file
         
         return "\n".join(lines)
     
@@ -298,8 +296,16 @@ def generate_outputs(
     md_content = md_gen.generate(items, source_url, steps=steps, carousel_data=carousel_data)
     json_data = json_gen.generate(items, source_url, steps=steps)
     
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    base_name = f"extract_{timestamp}"
+    # Extract Instagram reel/post ID from URL for filename
+    import re
+    ig_match = re.search(r'instagram\.com/(?:reels?|p|tv)/([A-Za-z0-9_-]+)', source_url)
+    if ig_match:
+        ig_id = ig_match.group(1)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        base_name = f"{timestamp}_{ig_id}"
+    else:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        base_name = f"extract_{timestamp}"
     
     md_path = md_gen.save(md_content, output_dir, f"{base_name}.md")
     json_path = json_gen.save(json_data, output_dir, f"{base_name}.json")

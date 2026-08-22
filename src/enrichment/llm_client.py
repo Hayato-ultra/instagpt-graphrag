@@ -178,6 +178,23 @@ class LLMClient:
             "fallback": {"calls": 0, "tokens": 0, "errors": 0},
             **{p.value: {"calls": 0, "tokens": 0, "errors": 0} for p in LLMProvider}
         }
+
+    # --- Task-based model routing (TODO #54) ---
+
+    def get_model_for_task(self, task: str) -> str:
+        """Select the best model for a given task type.
+
+        Tasks: 'extraction', 'enrichment', 'description', 'summary', 'classification'.
+        Returns the model name to use.
+        """
+        task_models = {
+            "extraction": self.primary_model,  # Use primary for extraction
+            "enrichment": self.primary_model,
+            "description": self.primary_model,
+            "summary": self.fallback_model,  # Use cheaper model for summaries
+            "classification": self.fallback_model,
+        }
+        return task_models.get(task, self.primary_model)
     
     async def check_ollama_health(self) -> bool:
         """Check if Ollama is running and responsive."""

@@ -15,6 +15,110 @@ from src.enrichment.llm_client import LLMClient
 
 settings = get_settings()
 
+# --- Output quality validators (TODO #4, #5) ---
+
+_TEMPLATE_DESCRIPTION_PATTERNS = [
+    re.compile(r"EntityType\.\w+", re.IGNORECASE),
+    re.compile(r"in the source content", re.IGNORECASE),
+    re.compile(r"is a EntityType", re.IGNORECASE),
+]
+
+_SUMMARY_ENTITY_TYPE_PATTERNS = [
+    re.compile(r"EntityType\.\w+", re.IGNORECASE),
+    re.compile(r"is a EntityType", re.IGNORECASE),
+]
+
+# --- Output quality validators (TODO #19, #23, #30) ---
+
+_GARBLED_PATTERNS = [
+    re.compile(r"[^\x00-\x7F]{5,}"),  # Long non-ASCII runs
+    re.compile(r"(\w)\1{4,}"),  # Repeated characters (aaaaa)
+    re.compile(r"\?\?\?"),  # Multiple question marks
+]
+
+
+def is_garbled_text(text: str) -> bool:
+    """Detect garbled/truncated text (TODO #19)."""
+    if not text or len(text.strip()) < 10:
+        return True
+    for pattern in _GARBLED_PATTERNS:
+        if pattern.search(text):
+            return True
+    return False
+
+
+def has_duplicate_content(summary: str, key_points: list[str], threshold: float = 0.7) -> bool:
+    """Check if key points duplicate the summary content (TODO #23)."""
+    if not summary or not key_points:
+        return False
+    summary_lower = summary.lower()
+    for point in key_points:
+        point_lower = point.lower()
+        # Check if key point is just a substring of summary
+        if point_lower in summary_lower and len(point_lower) > 20:
+            return True
+        # Check similarity
+        from difflib import SequenceMatcher
+        ratio = SequenceMatcher(None, summary_lower, point_lower).ratio()
+        if ratio > threshold:
+            return True
+    return False
+
+
+def validate_key_points(key_points: list[str], min_points: int = 3, max_points: int = 7) -> list[str]:
+    """Validate and filter key points (TODO #30)."""
+    if not key_points:
+        return []
+    # Remove empty/duplicate points
+    seen = set()
+    valid = []
+    for point in key_points:
+        point = point.strip()
+        if not point or len(point) < 10:
+            continue
+        normalized = point.lower()
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        valid.append(point)
+    # Limit to max_points
+    return valid[:max_points]
+
+# Entity types that are context, not content (TODO #18)
+_SKIP_ENTITY_TYPES = {EntityType.LANGUAGE}
+
+# Series/channel intro patterns to exclude (TODO #17)
+_SERIES_NAME_PATTERNS = [
+    re.compile(r"Day \d+ of ", re.IGNORECASE),
+    re.compile(r"episode \d+", re.IGNORECASE),
+    re.compile(r"Part \d+ of ", re.IGNORECASE),
+]
+
+
+def is_template_description(description: str) -> bool:
+    """Check if a description is template text rather than real content (TODO #4)."""
+    if not description:
+        return False
+    return any(p.search(description) for p in _TEMPLATE_DESCRIPTION_PATTERNS)
+
+
+def is_template_summary(summary: str) -> bool:
+    """Check if a summary contains EntityType keywords instead of real content (TODO #5)."""
+    if not summary:
+        return False
+    return any(p.search(summary) for p in _SUMMARY_ENTITY_TYPE_PATTERNS)
+
+
+def is_series_name(name: str) -> bool:
+    """Check if an entity name is a series/channel intro phrase (TODO #17)."""
+    return any(p.search(name) for p in _SERIES_NAME_PATTERNS)
+
+
+def should_skip_entity_type(entity_type: EntityType) -> bool:
+    """Check if an entity type should be skipped as standalone entity (TODO #18)."""
+    return entity_type in _SKIP_ENTITY_TYPES
+
+
 # Path to entity config file
 ENTITY_CONFIG_PATH = Path(__file__).parent.parent.parent / "config" / "entities.json"
 
@@ -419,7 +523,6 @@ class WebSearcher:
     )
 
     def __init__(self):
-        self.ddgs = DDGS()
         self.client = httpx.AsyncClient(
             timeout=httpx.Timeout(30.0),
             headers={"User-Agent": "Mozilla/5.0 (compatible; InstaGPT-GraphRAG/0.1)"}
@@ -428,13 +531,20 @@ class WebSearcher:
     async def search(self, query: str, max_results: int = 10) -> list[SearchResult]:
         """Search using DuckDuckGo (runs sync DDGS in thread)."""
         results = []
+        logger.debug(f"DDGS search query: {query}")
 
         try:
-            # Run DDGS in thread with timeout
+            # Create a new DDGS instance for each search to avoid thread issues
+            def _do_search():
+                from ddgs import DDGS
+                ddgs = DDGS()
+                return ddgs.text(query, max_results=max_results)
+            
             ddgs_results = await asyncio.wait_for(
-                asyncio.to_thread(self.ddgs.text, query, max_results),
+                asyncio.to_thread(_do_search),
                 timeout=15.0  # 15 second timeout
             )
+            logger.debug(f"DDGS returned {len(ddgs_results)} raw results")
 
             for r in ddgs_results:
                 url = r.get("href", "")
@@ -467,10 +577,46 @@ class WebSearcher:
         except Exception as e:
             logger.warning(f"DDGS search failed: {e}")
 
+        logger.debug(f"DDGS search returning {len(results)} filtered results")
         return results
+
+    async def search_entity_url(self, entity_name: str, entity_type: str = "") -> str | None:
+        """Search for the official URL of an entity (TODO #32).
+        
+        Args:
+            entity_name: name of the entity to find URL for.
+            entity_type: optional type hint (framework, library, tool, etc.).
+            
+        Returns:
+            Best URL found, or None.
+        """
+        query = f"{entity_name} official website"
+        if entity_type:
+            query += f" {entity_type}"
+        
+        results = await self.search(query, max_results=5)
+        if not results:
+            return None
+        
+        # Return first non-blacklisted URL
+        for r in results:
+            if r.url and not self._is_blacklisted(r.url):
+                return r.url
+        return None
+
+    def _is_blacklisted(self, url: str) -> bool:
+        """Check if URL is blacklisted."""
+        from urllib.parse import urlparse
+        try:
+            host = urlparse(url).hostname or ""
+            return any(b in host for b in self.URL_BLACKLIST)
+        except Exception:
+            return False
 
     async def search_entity(self, entity_name: str, entity_type: EntityType) -> list[SearchResult]:
         """Search for specific entity info with disambiguated queries."""
+        logger.debug(f"search_entity called for: {entity_name} (type: {entity_type})")
+        
         # Skip search for generic concepts that don't need web search
         # These are too broad and return irrelevant results
         generic_concepts = {
@@ -485,9 +631,11 @@ class WebSearcher:
         
         # Skip entities that look like transcription errors (Hindi text, too short, etc.)
         if len(entity_name) < 3:
+            logger.debug(f"Skipping search for short entity: {entity_name}")
             return []
         # Skip if contains Hindi/Devanagari characters
         if any('\u0900' <= c <= '\u097F' for c in entity_name):
+            logger.debug(f"Skipping search for Hindi entity: {entity_name}")
             return []
         
         # Add disambiguation based on entity type
@@ -517,11 +665,13 @@ class WebSearcher:
             query = f'{google_tools[entity_lower]} documentation'
         else:
             disambiguation = type_disambiguation.get(entity_type, "")
-            # Simplified query to avoid timeouts
-            if disambiguation:
+            # For unknown types, search for github repo specifically
+            if entity_type == EntityType.UNKNOWN:
+                query = f'{entity_name} github'
+            elif disambiguation:
                 query = f'"{entity_name}" {disambiguation}'
             else:
-                query = f'"{entity_name}" software'
+                query = f'"{entity_name}" github repository'
 
         # Use fewer results and shorter timeout
         results = await self.search(query, max_results=5)
@@ -616,9 +766,11 @@ class WebSearcher:
             
             # Check if the result is actually about the entity in a web dev context
             entity_lower = entity_name.lower()
-            if entity_lower in title_lower or entity_lower in snippet_lower:
+            # Allow results that mention the entity or are from GitHub
+            if (entity_lower in title_lower or 
+                entity_lower in snippet_lower or
+                "github.com" in url_lower):
                 filtered.append(r)
-            # Only keep results that mention the entity (remove the fallback)
         
         return filtered[:5]  # Limit to 5 relevant results
 
@@ -789,8 +941,53 @@ class EnrichmentPipeline:
             name = ent_data.get("name", name_lower)
             name_lower_check = name.lower()
             
+            # Skip email addresses
+            import re as re_module
+            if re_module.match(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$', name):
+                logger.info(f"Rejecting email address '{name}'")
+                continue
+            
+            # Skip non-entity patterns (day counters, progress markers, etc.)
+            non_entity_patterns = [
+                r'^day\s+\d+',  # "Day 9/100", "Day 1"
+                r'^\d+/\d+$',   # "9/100"
+                r'^week\s+\d+', # "Week 1"
+                r'^part\s+\d+', # "Part 1"
+                r'^step\s+\d+', # "Step 1"
+                r'^level\s+\d+', # "Level 1"
+            ]
+            if any(re_module.match(p, name_lower_check) for p in non_entity_patterns):
+                logger.info(f"Rejecting non-entity pattern '{name}'")
+                continue
+            
+            # Skip generic terms that shouldn't be entities
+            generic_terms = {
+                "web app", "web application", "mobile app", "desktop app",
+                "rest api", "graphql", "grpc", "webhook",
+                "javascript", "typescript", "python", "java", "kotlin", "swift",
+                "html", "css", "scss", "json", "yaml", "xml",
+                "react", "vue", "angular", "svelte", "next.js", "nuxt",
+                "node.js", "express", "django", "flask", "fastapi",
+                "docker", "kubernetes", "aws", "gcp", "azure",
+                "mysql", "postgresql", "mongodb", "redis", "sqlite",
+                "firebase", "supabase", "planetscale", "neon",
+                "github", "gitlab", "bitbucket",
+                "vscode", "intellij", "vim", "neovim", "cursor",
+                "postman", "thunder client", "insomnia",
+                "contract", "high school", "upwork", "freelancing",
+                "freelance", "client", "project", "portfolio",
+            }
+            if name_lower_check in generic_terms:
+                logger.info(f"Rejecting generic term '{name}'")
+                continue
+            
+            # Skip languages/frameworks as standalone entities
+            languages = {"java", "python", "javascript", "typescript", "kotlin", "swift", "go", "rust", "c++", "c#", "ruby", "php"}
+            if name_lower_check in languages:
+                logger.info(f"Rejecting language '{name}'")
+                continue
+            
             # Check if entity name appears in caption (word-boundary matching)
-            # Use \b to match whole words only
             import re as re_module
             if ' ' in name_lower_check:
                 # For multi-word entities, check if all words appear together
@@ -823,7 +1020,7 @@ class EnrichmentPipeline:
             if not is_substring:
                 final_validated[name_lower] = ent_data
         
-        if len(final_validated) >= 3:
+        if len(final_validated) >= 2:
             logger.info(f"Validated {len(final_validated)} entities from {len(entity_map)} total")
             return final_validated
         else:
@@ -874,7 +1071,20 @@ class EnrichmentPipeline:
             "click", "open", "go to", "visit"
         ]
         
+        # Project list indicators - if these are present, it's NOT a tutorial
+        project_indicators = [
+            "project idea", "project ideas", "build a", "create a",
+            "for beginners", "unique project", "portfolio project",
+            "java project", "python project", "react project",
+        ]
+        
         has_tutorial_content = any(ind in all_text.lower() for ind in tutorial_indicators)
+        has_project_content = any(ind in all_text.lower() for ind in project_indicators)
+        
+        # If it's a project list, don't generate steps
+        if has_project_content and not has_tutorial_content:
+            return []
+        
         if not has_tutorial_content or len(all_text) < 100:
             return []
 
@@ -909,20 +1119,19 @@ class EnrichmentPipeline:
                         "role": "system",
                         "content": (
                             f"{priority_instruction}"
-                            "Extract the EXACT step-by-step instructions from this tutorial/reel.\n\n"
-                            "The transcript contains the creator's spoken instructions in order.\n"
-                            "Extract each step EXACTLY as the creator described it.\n\n"
+                            "Extract actionable takeaways from this content.\n\n"
+                            "Analyze what the creator is PRESENTING and convert it to clear, useful steps.\n\n"
                             "RULES:\n"
-                            "- Follow the EXACT order from the transcript\n"
-                            "- Include the EXACT commands/tools mentioned (e.g., 'npm create vite')\n"
-                            "- Include what to SELECT/CHOOSE when mentioned (e.g., 'select React, then JavaScript')\n"
-                            "- Keep steps concise but include all details the creator mentioned\n"
-                            "- Maximum 15 steps\n"
-                            "- If no clear steps found, return empty array\n\n"
-                            "Return a JSON object with a \"steps\" array of strings."
+                            "- Convert each tool/resource/technique mentioned into an actionable step\n"
+                            "- Use clear, simple English (no jargon, no filler)\n"
+                            "- Each step should answer: What is it? What does it do? How to get it?\n"
+                            "- If the creator mentions specific tools, name them explicitly\n"
+                            "- Maximum 7 steps\n"
+                            "- If content is just music/promo with no useful info, return empty array\n\n"
+                            "Return a JSON object with \"steps\" array of strings."
                         ),
                     },
-                    {"role": "user", "content": f"Extract the exact steps from this transcript:\n\n{all_text_translated[:3000]}"},
+                    {"role": "user", "content": f"Content transcript:\n\n{all_text_translated[:3000]}"},
                 ],
                 temperature=0.1,
                 max_tokens=800,
@@ -1061,25 +1270,32 @@ class EnrichmentPipeline:
 
         prompt = (
             f"{priority_instruction}"
-            "Extract ALL specific technical entities that are EXPLICITLY MENTIONED in this content.\n\n"
-            "For each entity, also capture WHAT IT DOES in this specific content.\n\n"
-            "RULES:\n"
-            "- ONLY extract entities that are ACTUALLY MENTIONED in the transcript/caption/OCR\n"
-            "- Extract the EXACT names as they appear (preserve capitalization)\n"
-            "- Do NOT extract generic terms (e.g., 'animations', 'CSS', 'websites')\n"
-            "- Do NOT include programming languages (JavaScript, Python, etc.)\n"
-            "- Do NOT include platform names (Instagram, Facebook, YouTube)\n"
-            "- Do NOT include author/creator names\n"
-            "- Do NOT guess or infer entities - only extract what is clearly mentioned\n"
+            "Extract the specific technical entities and concepts EXPLICITLY NAMED or TAUGHT in this content.\n\n"
+            "CRITICAL RULES:\n"
+            "- ONLY extract entities whose EXACT NAME appears in the transcript/caption/OCR text\n"
+            "- If the transcript says 'Console Ninja', extract 'Console Ninja' — NOT 'Panc' or any other name\n"
+            "- If the transcript says 'github.dev', extract 'github.dev' — NOT 'GitHub.in' or any variation\n"
+            "- Do NOT guess, infer, or hallucinate entity names based on the topic\n"
+            "- Do NOT extract generic terms (e.g., 'animations', 'CSS', 'websites', 'code', 'editor')\n"
+            "- Do NOT extract programming languages (JavaScript, Python, Java, etc.)\n"
+            "- Do NOT extract platform names (Instagram, Facebook, YouTube, VS Code) unless specifically taught about\n"
+            "- Do NOT extract author/creator names\n"
+            "- Do NOT extract series names (e.g., 'Day 9 of making you financially independent')\n"
+            "- Do NOT extract entities that are just comparisons (e.g., 'you won't need Postman anymore')\n"
+            "- DO extract UX/UI principles taught (e.g., 'Reversible beats careful', 'progressive disclosure')\n"
+            "- DO extract specific techniques or patterns taught (e.g., 'lazy loading', 'code splitting')\n"
+            "- DO extract actionable steps shown (e.g., 'install via npm', 'add to config file')\n"
             "- Maximum 10 entities\n\n"
             "Content:\n"
             f"{combined_text[:3000]}\n\n"
-            "Return a JSON object with an \"entities\" array. Each entity has:\n"
-            "- \"name\": the exact entity name\n"
-            "- \"type\": one of [framework, library, tool, platform, service, "
-            "database, concept, web_app, mobile_app, api, unknown]\n"
-            "- \"confidence\": float 0.0-1.0\n"
-            "- \"context\": what this entity DOES in this specific content (1 sentence)\n\n"
+            "Return a JSON object with:\n"
+            "1. \"entities\" array — each with:\n"
+            "   - \"name\": the EXACT entity name as it appears in the text (preserve capitalization)\n"
+            "   - \"type\": one of [framework, library, tool, platform, service, "
+            "database, concept, principle, technique, web_app, mobile_app, api, unknown]\n"
+            "   - \"confidence\": float 0.0-1.0 (0.9+ for exact name match, 0.5-0.8 for inferred)\n"
+            "   - \"context\": what this entity DOES or TEACHES in this specific content (1 sentence)\n"
+            "2. \"steps\" array — actionable steps or techniques taught (3-5 items, each a short phrase)\n\n"
             "Return ONLY valid JSON."
         )
 
@@ -1089,12 +1305,12 @@ class EnrichmentPipeline:
                     {
                         "role": "system",
                         "content": (
-                            "You are analyzing a tutorial/reel transcript to extract technical entities. "
-                            "CRITICAL RULE: ONLY extract entities that are EXPLICITLY MENTIONED in the content. "
-                            "Do NOT guess, infer, or hallucinate entities. "
-                            "For each entity, also capture what it DOES in this specific content. "
-                            "Focus on tools, frameworks, libraries, and product names actually mentioned. "
-                            "Maximum 10. Return valid JSON."
+                            "You are analyzing a tutorial/reel transcript to extract technical entities "
+                            "and concepts being TAUGHT. CRITICAL RULE: ONLY extract entities that are "
+                            "EXPLICITLY MENTIONED in the content. Do NOT guess or hallucinate. "
+                            "Also extract UX/UI principles, techniques, and actionable steps shown. "
+                            "For each entity, capture what it DOES or TEACHES in this specific content. "
+                            "Return valid JSON with 'entities' and 'steps' arrays."
                         ),
                     },
                     {"role": "user", "content": prompt},
@@ -1389,6 +1605,21 @@ class EnrichmentPipeline:
 
         validated = []
         for entity in entities:
+            # TODO #17: Skip series/channel intro phrases
+            if is_series_name(entity.name):
+                logger.debug(f"Rejected entity '{entity.name}' — series/channel name")
+                continue
+
+            # TODO #18: Skip languages/frameworks as standalone entities
+            if should_skip_entity_type(entity.type):
+                logger.debug(f"Rejected entity '{entity.name}' — type {entity.type.value} skipped")
+                continue
+
+            # TODO #4: Reject template descriptions
+            if is_template_description(entity.description):
+                entity.description = ""
+                logger.debug(f"Cleared template description for '{entity.name}'")
+
             name_lower = entity.name.lower()
             name_words = name_lower.split()
             
@@ -1514,10 +1745,12 @@ class EnrichmentPipeline:
             async with semaphore:
                 name = entity_data["name"]
                 entity_type = entity_data["type"]
+                logger.debug(f"Searching for entity: {name} (type: {entity_type})")
                 
                 # Check cache first
                 cached = self._get_cached_search(name)
                 if cached is not None:
+                    logger.debug(f"Using cached results for {name}: {len(cached)} results")
                     return {
                         **entity_data,
                         "search_results": cached,
@@ -1528,6 +1761,7 @@ class EnrichmentPipeline:
                     search_results = await self.searcher.search_entity(
                         name, entity_type
                     )
+                    logger.debug(f"Search results for {name}: {len(search_results)} results")
                     # Cache the results
                     self._cache_search(name, search_results)
                     return {
@@ -1634,6 +1868,11 @@ class EnrichmentPipeline:
                 for a in alternatives
             ]
 
+            # TODO #4: Clear template descriptions before assembly
+            if is_template_description(desc):
+                logger.debug(f"Cleared template description for '{entity_data['name']}'")
+                desc = ""
+
             enriched.append(EnrichedEntity(
                 name=entity_data["name"],
                 type=entity_data["type"],
@@ -1689,6 +1928,7 @@ class EnrichmentPipeline:
             "- Include any STEPS or COMMANDS involving this entity\n"
             "- Do NOT give generic definitions (e.g., do NOT say 'React is a JavaScript library')\n"
             "- Do NOT use web search knowledge — use ONLY the source content\n"
+            "- Do NOT return template text like 'EntityType.X in the source content'\n"
             "- If the source doesn't mention enough about this entity, say 'mentioned in the tutorial'\n"
             "- Write 2-4 sentences per entity with specific details from the content\n\n"
             "The description should answer: What does this entity DO in this content? What specific features/details are mentioned?\n\n"
@@ -1748,7 +1988,11 @@ class EnrichmentPipeline:
                 raw = data["descriptions"]
                 for d in raw:
                     if isinstance(d, dict):
-                        descriptions.append(d.get("description", d.get("summary", str(d))))
+                        # Extract first value from dict
+                        if len(d) == 1:
+                            descriptions.append(list(d.values())[0])
+                        else:
+                            descriptions.append(d.get("description", d.get("summary", str(d))))
                     else:
                         descriptions.append(str(d))
             
@@ -1785,7 +2029,24 @@ class EnrichmentPipeline:
 
             # Validate count matches batch
             if len(descriptions) == len(batch):
-                return descriptions
+                # Validate descriptions are not template text
+                validated_descs = []
+                template_patterns = [
+                    "EntityType.", "in the source content", "mentioned in the source",
+                    "is a EntityType", "is a tool in", "is a framework in",
+                ]
+                for i, desc in enumerate(descriptions):
+                    is_template = any(p in desc.lower() for p in template_patterns)
+                    if is_template or len(desc) < 20:
+                        # Request single description for this entity
+                        try:
+                            single_desc = await self._llm_describe_single(batch[i])
+                            validated_descs.append(single_desc)
+                        except:
+                            validated_descs.append(f"{batch[i]['name']} is mentioned in the tutorial.")
+                    else:
+                        validated_descs.append(desc)
+                return validated_descs
 
             # If single entity response, try to match to batch
             if len(descriptions) == 1 and len(batch) > 1:
@@ -1845,7 +2106,7 @@ class EnrichmentPipeline:
             except Exception:
                 pass
             return [
-                f"{e['name']} is a {e['type']} mentioned in the source content."
+                f"{e['name']} is mentioned in the tutorial."
                 for e in batch
             ]
 

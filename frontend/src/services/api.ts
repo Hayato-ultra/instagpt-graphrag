@@ -64,4 +64,22 @@ export const api = {
     fetchJSON<{ id: string; video_id: string; title: string; summary: string; ai_notes: string; links: string; tags: string; created_at: string }>(
       `/notebook/${id}`
     ),
+
+  editNode: (nodeId: string, fields: Record<string, string>) =>
+    fetchJSON<{ ok: boolean; node: Record<string, unknown> }>(
+      `/graph/node/${encodeURIComponent(nodeId)}`,
+      { method: 'PUT', body: JSON.stringify(fields) }
+    ),
+
+  mergeNodes: (sourceId: string, targetId: string, mergedName?: string, mergedDescription?: string) =>
+    fetchJSON<{ ok: boolean; merged_into: string }>(
+      '/graph/merge',
+      { method: 'POST', body: JSON.stringify({ source_id: sourceId, target_id: targetId, merged_name: mergedName, merged_description: mergedDescription }) }
+    ),
+
+  createNode: (data: { name: string; type?: string; description?: string; summary?: string; topic?: string; sub_topic?: string; tags?: string; key_points?: string; content_type?: string; source_url?: string }) =>
+    fetchJSON<{ ok: boolean; node: Record<string, unknown> }>(
+      '/graph/node',
+      { method: 'POST', body: JSON.stringify(data) }
+    ),
 }

@@ -11,8 +11,7 @@ async def test():
     start = time.time()
     try:
         result = await pipeline.process_url(
-            "https://www.instagram.com/reels/DawnK11ikdr/",
-            stage_callback=lambda s: print(f"  Stage: {s} ({time.time()-start:.1f}s)")
+            "https://www.instagram.com/reels/DawnK11ikdr/"
         )
         print(f"\nSuccess: {result.success}")
         if result.processing_result:

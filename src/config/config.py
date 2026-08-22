@@ -1,5 +1,6 @@
-from pydantic_settings import BaseSettings, SettingsConfigDict
 from functools import lru_cache
+
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -25,6 +26,9 @@ class Settings(BaseSettings):
     OPENAI_EMBEDDING_MODEL: str = "text-embedding-3-small"
     OPENAI_EMBEDDING_DIM: int = 1536
     OPENAI_CHAT_MODEL: str = "gpt-4o-mini"
+
+    # Embedding version tracking (TODO #40)
+    EMBEDDING_MODEL_VERSION: str = "v1"  # Bump when model changes to trigger re-embedding
 
     # OpenRouter
     OPENROUTER_API_KEY: str = ""
@@ -85,6 +89,9 @@ class Settings(BaseSettings):
     # Playwright
     PLAYWRIGHT_BROWSER: str = "chromium"
     PLAYWRIGHT_HEADLESS: bool = True
+
+    # yt-dlp: browser to extract cookies from (empty = disabled, never reads user's Chrome by default)
+    YTDLP_COOKIES_FROM_BROWSER: str = ""
 
 
 @lru_cache

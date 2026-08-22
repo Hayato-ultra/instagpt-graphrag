@@ -8,19 +8,27 @@ Every field from the original models has a destination:
   4. JSONB array for dynamic/unpredictable data
 """
 import enum
-from datetime import datetime, UTC
-from typing import Optional
+import uuid
+from datetime import UTC, datetime
 
 from sqlalchemy import (
-    Column, Integer, String, Text, Float, Boolean, DateTime,
-    ForeignKey, Index, UniqueConstraint, Enum as SAEnum, JSON,
+    Column,
+    DateTime,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
 )
-from sqlalchemy.dialects.postgresql import JSONB, UUID as PG_UUID
+from sqlalchemy import (
+    Enum as SAEnum,
+)
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship
-import uuid
 
 from src.database.base import Base
-
 
 # ─── Enums ────────────────────────────────────────────────────────────────────
 
@@ -55,6 +63,7 @@ class EntityType(str, enum.Enum):
     CONCEPT = "concept"
     PATTERN = "pattern"
     TECHNIQUE = "technique"
+    RELATED = "related"
     UNKNOWN = "unknown"
 
 
@@ -80,6 +89,45 @@ class JobStatus(str, enum.Enum):
     PROCESSING = "processing"
     COMPLETED = "completed"
     FAILED = "failed"
+    DEAD_LETTER = "dead_letter"
+
+
+class StepStatus(str, enum.Enum):
+    """Pipeline step status."""
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    SKIPPED = "skipped"
+
+
+class JobPriority(int, enum.Enum):
+    """Pipeline job priority. Lower = higher priority."""
+    URGENT = 0
+    HIGH = 1
+    NORMAL = 2
+    LOW = 3
+
+
+class OutboxEventStatus(str, enum.Enum):
+    """Status of a transactional outbox event."""
+    PENDING = "pending"
+    PROCESSING = "processing"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+class OutboxEventType(str, enum.Enum):
+    """Event types emitted by the outbox.
+
+    PostgreSQL is the source of truth; each event carries the full payload
+    needed to rebuild the projection (Neo4j node or Qdrant point) idempotently.
+    """
+    ENTITY_UPSERT = "entity.upsert"
+    ENTITY_DELETE = "entity.delete"
+    RELATIONSHIP_UPSERT = "relationship.upsert"
+    CONTENT_CHUNKS_UPSERT = "content.chunks.upsert"
+    CONTENT_DELETE = "content.delete"
 
 
 class RelationshipType(str, enum.Enum):
@@ -144,10 +192,6 @@ class Content(Base):
     analysis_jobs = relationship("AnalysisJob", back_populates="content")
     outputs = relationship("OutputFile", back_populates="content")
 
-    __table_args__ = (
-        Index("ix_content_created_at", "created_at"),
-    )
-
 
 class ContentChunk(Base):
     """Semantic text chunks from content for embedding.
@@ -168,10 +212,6 @@ class ContentChunk(Base):
 
     # Relationships
     content = relationship("Content", back_populates="chunks")
-
-    __table_args__ = (
-        Index("ix_chunks_content_id", "content_id"),
-    )
 
 
 # ─── Entity Types ─────────────────────────────────────────────────────────────
@@ -214,6 +254,14 @@ class Entity(Base):
     # Neo4j node ID for linking to graph store
     neo4j_id = Column(String(255), nullable=True, unique=True)
     source_text = Column(Text, default="")  # Full source transcript for LLM context
+    # Provenance — tracks exactly how this entity was created
+    extraction_timestamp = Column(DateTime, nullable=True)
+    pipeline_version = Column(String(50), nullable=True)
+    model_version = Column(String(100), nullable=True)
+    embedding_version = Column(String(100), nullable=True)
+    # Temporal knowledge (TODO #57)
+    valid_from = Column(DateTime, nullable=True)  # When this entity became valid
+    valid_until = Column(DateTime, nullable=True)  # When this entity expires (null = permanent)
     # Preserve raw enrichment data
     metadata_ = Column("metadata", JSONB, default=dict)
     created_at = Column(DateTime, default=lambda: datetime.now(UTC), nullable=False)
@@ -250,7 +298,7 @@ class Entity(Base):
     episodic_memories = relationship("EpisodicMemory", back_populates="entity", cascade="all, delete-orphan")
     web_references = relationship("WebReference", back_populates="entity", cascade="all, delete-orphan")
     similar_tools = relationship("SimilarTool", back_populates="entity", cascade="all, delete-orphan")
-    primary_topics = relationship("ContentTopic", back_populates="entity")
+    primary_topics = relationship("ContentTopic", back_populates="entity", overlaps="content_topics")
 
     __table_args__ = (
         Index("ix_entities_name_lower", "name"),
@@ -443,6 +491,116 @@ class AnalysisJob(Base):
         Index("ix_analysis_jobs_status", "status"),
         Index("ix_analysis_jobs_created_at", "created_at"),
     )
+
+
+# ─── Pipeline Jobs ───────────────────────────────────────────────────────────
+
+class PipelineJob(Base):
+    """Resumable pipeline job with content-hash idempotency.
+
+    Replaces AnalysisJob for pipeline work. Each job runs through ordered
+    stages (extract→chunk→embed→enrich→categorize→format→graph_update).
+    Completed stages are never re-run; crash-recovery resets RUNNING→PENDING.
+    """
+    __tablename__ = "pipeline_jobs"
+
+    id = Column(String(36), primary_key=True, default=_uuid)
+    content_hash = Column(String(64), nullable=False, unique=True, index=True)
+    url = Column(Text, nullable=False)
+    status = Column(
+        SAEnum(JobStatus),
+        default=JobStatus.PENDING,
+        nullable=False,
+        index=True,
+    )
+    current_step = Column(String(50), nullable=True)
+    priority = Column(Integer, default=JobPriority.NORMAL, nullable=False)
+    attempt = Column(Integer, default=0, nullable=False)
+    max_attempts = Column(Integer, default=3, nullable=False)
+    error = Column(Text, nullable=True)
+    result_metadata = Column(JSONB, default=dict)
+    created_at = Column(DateTime, default=lambda: datetime.now(UTC), nullable=False)
+    started_at = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+    heartbeat_at = Column(DateTime, nullable=True)
+
+    # Relationships
+    steps = relationship(
+        "PipelineStep",
+        back_populates="job",
+        cascade="all, delete-orphan",
+        order_by="PipelineStep.step_order",
+    )
+
+
+class PipelineStep(Base):
+    """Checkpoint record for a single pipeline stage.
+
+    Once status=COMPLETED the stage is never re-run for this job.
+    On crash recovery any RUNNING steps are reset to PENDING.
+    """
+    __tablename__ = "pipeline_steps"
+
+    id = Column(String(36), primary_key=True, default=_uuid)
+    job_id = Column(
+        String(36),
+        ForeignKey("pipeline_jobs.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    step_name = Column(String(50), nullable=False)
+    step_order = Column(Integer, nullable=False)
+    status = Column(
+        SAEnum(StepStatus),
+        default=StepStatus.PENDING,
+        nullable=False,
+    )
+    # Opaque checkpoint data for resume (e.g. extracted content hash, chunk count)
+    checkpoint_data = Column(JSONB, default=dict)
+    error = Column(Text, nullable=True)
+    attempt = Column(Integer, default=0, nullable=False)
+    started_at = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+
+    # Relationships
+    job = relationship("PipelineJob", back_populates="steps")
+
+    __table_args__ = (
+        UniqueConstraint("job_id", "step_name", name="uq_pipeline_step_job_name"),
+    )  # ix_pipeline_steps_job_status created by migration 002
+
+
+# ─── Outbox ───────────────────────────────────────────────────────────────────
+
+class OutboxEvent(Base):
+    """Transactional outbox event for projecting PG state to Neo4j/Qdrant.
+
+    PostgreSQL is the canonical source of truth. When an entity/relationship/
+    content is written, an outbox event is inserted in the same transaction.
+    A worker later consumes the event and applies the projection to Neo4j and
+    Qdrant idempotently (deterministic IDs, MERGE-based writes).
+    """
+    __tablename__ = "outbox_events"
+
+    id = Column(String(36), primary_key=True, default=_uuid)
+    event_type = Column(SAEnum(OutboxEventType), nullable=False, index=True)
+    # Aggregate the event refers to (entity id, content id, etc.)
+    aggregate_type = Column(String(50), nullable=False, default="entity")
+    aggregate_id = Column(String(255), nullable=False, index=True)
+    # Serialized payload needed to rebuild the projection idempotently
+    payload = Column(JSONB, default=dict)
+    status = Column(
+        SAEnum(OutboxEventStatus),
+        default=OutboxEventStatus.PENDING,
+        nullable=False,
+        index=True,
+    )
+    attempts = Column(Integer, default=0, nullable=False)
+    max_attempts = Column(Integer, default=3, nullable=False)
+    last_error = Column(Text, nullable=True)
+    next_retry_at = Column(DateTime, nullable=True, index=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(UTC), nullable=False)
+    processed_at = Column(DateTime, nullable=True)
 
 
 # ─── Episodic Memory ─────────────────────────────────────────────────────────

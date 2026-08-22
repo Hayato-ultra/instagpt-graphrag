@@ -14,7 +14,20 @@
         "command": "npx",
         "args": ["-y", "@anthropic/ib-mcp-cache-server"],
         "enabled": true
+      },
+    "shadcn": {
+        "type": "local",
+        "command": "npx",
+        "args": ["shadcn@latest", "mcp"],
+        "enabled": true
+      },
+    "21st": {
+        "type": "remote",
+        "url": "https://21st.dev/api/mcp",
+        "headers": {
+          "x-api-key": "21st_sk_f0fb6166cdd2dfcde9fc4a0438d54971f46b1b672bcb8a101b20ac10d0afb6db"
+        },
+        "enabled": true
       }
     }
-
 }

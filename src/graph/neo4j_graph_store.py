@@ -335,7 +335,8 @@ class Neo4jGraphStore(GraphStore):
         record = await (await session.run(query, node_id=node_id)).single()
         
         if record:
-            node_data = dict(record["e"])
+            e = record["e"]
+            node_data = {k: e[k] for k in e.keys()} if hasattr(e, 'keys') and not isinstance(e, dict) else dict(e) if not isinstance(e, dict) else e
             qdrant_id = node_data.get("qdrant_id", existing_payload.get("qdrant_id", node_id))
             
             # Merge description with timestamp
@@ -566,7 +567,10 @@ class Neo4jGraphStore(GraphStore):
         """
         async with self.driver.session() as session:
             record = await (await session.run(query, name=name)).single()
-            return dict(record["e"]) if record else None
+            if not record:
+                return None
+            e = record["e"]
+            return {k: e[k] for k in e.keys()} if hasattr(e, 'keys') else dict(e)
     
     async def get_related(self, name: str, relation: str = None, limit: int = 10) -> List[Dict]:
         """Get related entities."""
@@ -579,8 +583,14 @@ class Neo4jGraphStore(GraphStore):
         LIMIT $limit
         """
         async with self.driver.session() as session:
-            records = await session.run(query, name=name, limit=limit).data()
-            return [{"node": dict(r["related"]), "relation": r["relation"], "weight": r["weight"]} for r in records]
+            result = await session.run(query, name=name, limit=limit)
+            records = await result.data()
+            result = []
+            for r in records:
+                node = r["related"]
+                node_dict = {k: node[k] for k in node.keys()} if hasattr(node, 'keys') and not isinstance(node, dict) else dict(node) if not isinstance(node, dict) else node
+                result.append({"node": node_dict, "relation": r["relation"], "weight": r["weight"]})
+            return result
     
     async def search_entities(self, query_text: str, limit: int = 10) -> List[Dict]:
         """Full-text search on entities."""
@@ -591,8 +601,14 @@ class Neo4jGraphStore(GraphStore):
         LIMIT $limit
         """
         async with self.driver.session() as session:
-            records = await session.run(query, query=query_text, limit=limit).data()
-            return [dict(r["node"]) for r in records]
+            result = await session.run(query, query=query_text, limit=limit)
+            records = await result.data()
+            result = []
+            for r in records:
+                node = r["node"]
+                node_dict = {k: node[k] for k in node.keys()} if hasattr(node, 'keys') and not isinstance(node, dict) else dict(node) if not isinstance(node, dict) else node
+                result.append(node_dict)
+            return result
     
     async def get_stats(self) -> Dict[str, Any]:
         """Get graph statistics."""
@@ -607,7 +623,13 @@ class Neo4jGraphStore(GraphStore):
         async with self.driver.session() as session:
             for key, query in queries.items():
                 result = await session.run(query)
-                stats[key] = await result.data()
+                data = await result.data()
+                # Ensure all values are plain Python types for JSON serialization
+                stats[key] = [
+                    {k: (str(v) if not isinstance(v, (int, float, str, bool, type(None))) else v)
+                     for k, v in row.items()}
+                    for row in data
+                ]
         
         return stats
     
@@ -634,6 +656,119 @@ class Neo4jGraphStore(GraphStore):
             
             return json.dumps(records, default=str)
     
+    async def project_entity(self, entity_id: str, payload: dict, embedding: list[float] = None) -> str:
+        """Idempotently project a PG entity to Neo4j + Qdrant using a stable ID.
+
+        PostgreSQL is the source of truth. This method rebuilds the derived
+        projection from a snapshot payload. The Neo4j node id and Qdrant point
+        id are both derived deterministically from the PG entity id, so
+        repeated application never creates duplicates.
+
+        Returns the Neo4j node id.
+        """
+        name = payload.get("name", "")
+        entity_type = payload.get("type", "unknown")
+        node_id = f"entity-{entity_id}"
+        qdrant_id = entity_id  # stable Qdrant point id === PG entity id
+
+        # Embed if not provided (vector projection is derived data)
+        if embedding is None and self.embedder:
+            try:
+                description = payload.get("description", "")
+                embedding = await self.embedder.embed_single(f"{name} {entity_type} {description}")
+            except Exception as e:
+                logger.warning(f"Failed to embed '{name}' during projection: {e}")
+
+        props = {
+            "id": node_id,
+            "qdrant_id": qdrant_id,
+            "entity_id": entity_id,
+            "name": name,
+            "type": entity_type,
+            "topic": payload.get("topic"),
+            "sub_topic": payload.get("sub_topic"),
+            "content_type": payload.get("content_type"),
+            "description": payload.get("description", ""),
+            "summary": payload.get("summary", ""),
+            "key_points": json.dumps(payload.get("key_points", [])),
+            "web_info": json.dumps(payload.get("web_info", [])),
+            "similar_tools": json.dumps(payload.get("similar_tools", [])),
+            "tags": json.dumps(payload.get("tags", [])),
+            "source_url": payload.get("source_url"),
+            "source_chunk_id": payload.get("source_chunk_id"),
+            "confidence": payload.get("confidence", 0.0),
+            "version": payload.get("version", 1),
+            "updated_at": datetime.now(UTC).isoformat(),
+        }
+        props = {k: v for k, v in props.items() if v is not None}
+
+        query = """
+        MERGE (e:Entity {id: $node_id})
+        ON CREATE SET e += $props, e.created_at = $created_at
+        ON MATCH SET e += $props
+        """
+        async with self.driver.session() as session:
+            await session.run(
+                query, node_id=node_id, props=props, created_at=datetime.now(UTC).isoformat()
+            )
+
+        # Upsert the Qdrant point idempotently (stable point id).
+        if embedding is not None:
+            await asyncio.to_thread(
+                self.vector_store.client.upsert,
+                collection_name=settings.QDRANT_COLLECTION,
+                points=[{
+                    "id": qdrant_id,
+                    "vector": embedding,
+                    "payload": {
+                        "id": node_id,
+                        "qdrant_id": qdrant_id,
+                        "entity_id": entity_id,
+                        "name": name,
+                        "type": entity_type,
+                        "node_type": "entity",
+                        **{k: v for k, v in props.items() if k not in ("id", "qdrant_id", "entity_id", "name", "type")},
+                    },
+                }],
+            )
+
+        return node_id
+
+    async def project_relationship(self, source_name: str, target_name: str, rel_type: str,
+                                   description: str = "", confidence: float = 0.0) -> None:
+        """Idempotently project a relationship edge (MERGE so no duplicates)."""
+        rel = ExtractedRelationship(
+            source=source_name,
+            target=target_name,
+            relation_type=rel_type,
+            description=description,
+            confidence=confidence,
+        )
+        async with self.driver.session() as session:
+            await self._create_relationship_edge(session, rel)
+
+    async def node_exists(self, node_id: str) -> bool:
+        """Check whether a Neo4j node with the given id exists (reconciliation)."""
+        query = "MATCH (e:Entity {id: $node_id}) RETURN count(e) as c"
+        async with self.driver.session() as session:
+            record = await (await session.run(query, node_id=node_id)).single()
+            return bool(record and record["c"] > 0)
+
+    async def project_entity_delete(self, node_id: str, qdrant_id: str) -> None:
+        """Remove a derived projection (entity node + its vector point)."""
+        query = "MATCH (e:Entity {id: $node_id}) DETACH DELETE e"
+        async with self.driver.session() as session:
+            await session.run(query, node_id=node_id)
+        if qdrant_id:
+            try:
+                await asyncio.to_thread(
+                    self.vector_store.client.delete,
+                    collection_name=settings.QDRANT_COLLECTION,
+                    points_selector=[qdrant_id],
+                )
+            except Exception as e:
+                logger.warning(f"Qdrant delete failed for {qdrant_id}: {e}")
+
     async def upsert_source(self, url: str, title: str = "", metadata: dict = None) -> str:
         """Upsert a Source node and return its ID."""
         query = """

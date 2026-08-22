@@ -34,3 +34,6 @@ frontend/node_modules/
 # Output & text files
 *.txt
 outputs/
+outputso/
+TODO_FIXES.md 
+frontend_docs/

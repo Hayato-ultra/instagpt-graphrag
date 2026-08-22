@@ -83,6 +83,9 @@ strict_optional = true
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+    "integration: tests requiring live Postgres/Neo4j (deselect with '-m \"not integration\"')",
+]
 
 [build-system]
 requires = ["setuptools>=68", "wheel"]

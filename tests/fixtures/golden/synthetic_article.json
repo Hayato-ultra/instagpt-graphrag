@@ -1,0 +1,11 @@
+{
+  "url": "https://example.com/test-article",
+  "normalized_url": "https://example.com/test-article",
+  "expected_entities": [
+    {"name": "FastAPI", "type": "framework"},
+    {"name": "PostgreSQL", "type": "database"}
+  ],
+  "expected_topics": ["backend"],
+  "min_entity_count": 2,
+  "notes": "Synthetic golden example for regression testing"
+}

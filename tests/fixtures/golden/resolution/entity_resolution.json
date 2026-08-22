@@ -1,0 +1,142 @@
+{
+  "existing_entities": [
+    {
+      "id": "ent-docker",
+      "name": "Docker",
+      "type": "platform",
+      "description": "Containerization platform for building, shipping, and running applications"
+    },
+    {
+      "id": "ent-aws",
+      "name": "AWS",
+      "type": "platform",
+      "description": "Amazon Web Services cloud computing platform"
+    },
+    {
+      "id": "ent-vscode",
+      "name": "VS Code",
+      "type": "tool",
+      "description": "Visual Studio Code source code editor from Microsoft"
+    },
+    {
+      "id": "ent-appwrite",
+      "name": "Appwrite",
+      "type": "platform",
+      "description": "Open-source backend server for building web and mobile applications"
+    },
+    {
+      "id": "ent-postgres",
+      "name": "PostgreSQL",
+      "type": "database",
+      "description": "Open-source relational database management system"
+    },
+    {
+      "id": "ent-supabase",
+      "name": "Supabase",
+      "type": "platform",
+      "description": "Open-source Firebase alternative built on PostgreSQL"
+    }
+  ],
+  "pairs": [
+    {
+      "id": "res-01",
+      "category": "exact",
+      "query": {
+        "name": "Docker",
+        "type": "platform",
+        "description": "Containerization platform"
+      },
+      "expected": {"decision": "MERGE", "canonical_id": "ent-docker"}
+    },
+    {
+      "id": "res-02",
+      "category": "case",
+      "query": {
+        "name": "docker",
+        "type": "platform",
+        "description": "Container platform"
+      },
+      "expected": {"decision": "MERGE", "canonical_id": "ent-docker"}
+    },
+    {
+      "id": "res-03",
+      "category": "alias",
+      "query": {
+        "name": "VSCode",
+        "type": "tool",
+        "description": "Code editor"
+      },
+      "expected": {"decision": "MERGE", "canonical_id": "ent-vscode"}
+    },
+    {
+      "id": "res-04",
+      "category": "alias",
+      "query": {
+        "name": "postgres",
+        "type": "database",
+        "description": "Relational database"
+      },
+      "expected": {"decision": "MERGE", "canonical_id": "ent-postgres"}
+    },
+    {
+      "id": "res-05",
+      "category": "typo",
+      "query": {
+        "name": "Apprite",
+        "type": "platform",
+        "description": "Open-source backend server"
+      },
+      "expected": {"decision": "MERGE", "canonical_id": "ent-appwrite"}
+    },
+    {
+      "id": "res-06",
+      "category": "word_order",
+      "query": {
+        "name": "Code VS",
+        "type": "tool",
+        "description": "Source code editor from Microsoft"
+      },
+      "expected": {"decision": "MERGE", "canonical_id": "ent-vscode"}
+    },
+    {
+      "id": "res-07",
+      "category": "similar",
+      "query": {
+        "name": "AWS Cloud",
+        "type": "platform",
+        "description": "Amazon Web Services cloud"
+      },
+      "expected": {"decision": "MERGE", "canonical_id": "ent-aws"}
+    },
+    {
+      "id": "res-08",
+      "category": "unrelated",
+      "query": {
+        "name": "Kubernetes",
+        "type": "platform",
+        "description": "Container orchestration"
+      },
+      "expected": {"decision": "NEW", "canonical_id": null}
+    },
+    {
+      "id": "res-09",
+      "category": "unrelated",
+      "query": {
+        "name": "React",
+        "type": "framework",
+        "description": "UI library"
+      },
+      "expected": {"decision": "NEW", "canonical_id": null}
+    },
+    {
+      "id": "res-10",
+      "category": "ambiguous",
+      "query": {
+        "name": "Supabase",
+        "type": "platform",
+        "description": "Firebase alternative"
+      },
+      "expected": {"decision": "MERGE", "canonical_id": "ent-supabase"}
+    }
+  ]
+}

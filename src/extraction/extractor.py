@@ -873,11 +873,12 @@ class ContentExtractor:
         
         cookies_path = Path(self.COOKIES_FILE)
         
-        # Try with cookies file first, then fallback to browser cookies
+        # Try with cookies file first, then fallback to browser cookies if explicitly enabled
         attempts = []
         if cookies_path.exists():
             attempts.append(["--cookies", str(cookies_path)])
-        attempts.append(["--cookies-from-browser", "chrome"])
+        if settings.YTDLP_COOKIES_FROM_BROWSER:
+            attempts.append(["--cookies-from-browser", settings.YTDLP_COOKIES_FROM_BROWSER])
         
         for cookie_args in attempts:
             try:
@@ -921,11 +922,12 @@ class ContentExtractor:
         temp_dir = Path(tempfile.mkdtemp(prefix="insta_reel_"))
         
         try:
-            # Try with cookies file first, then fallback to browser cookies
+            # Try with cookies file first, then fallback to browser cookies if explicitly enabled
             attempts = []
             if cookies_path.exists():
                 attempts.append(["--cookies", str(cookies_path)])
-            attempts.append(["--cookies-from-browser", "chrome"])
+            if settings.YTDLP_COOKIES_FROM_BROWSER:
+                attempts.append(["--cookies-from-browser", settings.YTDLP_COOKIES_FROM_BROWSER])
             
             video_id = url.rstrip("/").split("/")[-1]
             output_path = temp_dir / f"{video_id}.mp4"

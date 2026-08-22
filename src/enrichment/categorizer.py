@@ -141,6 +141,20 @@ For EACH entity, return a JSON object with these fields:
 Content type definitions:
 {content_type_defs}
 
+Topic category definitions:
+- frontend: UI libraries, CSS frameworks, React/Vue/Angular, component libraries (e.g. tailwind, shadcn, radix), animations, UI/UX tools
+- backend: APIs, servers, server frameworks (e.g. express, fastapi, django)
+- devops: CI/CD, Docker, Kubernetes, deployment, monitoring
+- ai_ml: LLMs, embeddings, RAG, prompt engineering, AI agents
+- database: SQL/NoSQL databases, ORMs, data modeling
+- security: auth, OAuth, JWT, encryption
+- testing: unit/integration/e2e testing frameworks
+- architecture: design patterns, system design, clean code
+- performance: optimization, caching, profiling
+- mobile: React Native, Flutter, Expo
+- cloud: AWS/GCP/Azure, serverless, Vercel/Netlify
+- other: only if nothing above fits at all
+
 Entities to analyze:
 {entities_text}
 
@@ -171,6 +185,7 @@ Return ONLY valid JSON."""
         )
 
         content = result["content"].strip()
+        logger.debug(f"Categorize batch raw response: {content[:500]}")
 
         # Parse JSON
         json_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", content, re.DOTALL)
@@ -190,16 +205,34 @@ Return ONLY valid JSON."""
             for i, entity in enumerate(entities):
                 if i < len(results):
                     r = results[i]
+                    # Parse topic
+                    topic_str = r.get("topic", "other")
+                    try:
+                        primary_topic = TopicCategory(topic_str)
+                    except ValueError:
+                        primary_topic = TopicCategory.OTHER
+
+                    # Parse content type
+                    type_str = r.get("content_type", "tutorial")
+                    try:
+                        content_type = ContentType(type_str)
+                    except ValueError:
+                        content_type = ContentType.TUTORIAL
+
+                    # Extract tags
+                    sub_topics = r.get("subtopics", [])
+                    tags = self._extract_tags(entity, primary_topic, sub_topics)
+
                     categorized.append(CategorizedItem(
                         entity=entity,
-                        topic=TopicCategory(r.get("topic", "other")),
+                        primary_topic=primary_topic,
                         topic_confidence=float(r.get("topic_confidence", 0.7)),
-                        content_type=ContentType(r.get("content_type", "tutorial")),
+                        content_type=content_type,
                         type_confidence=float(r.get("type_confidence", 0.7)),
                         summary=r.get("summary", ""),
                         key_points=r.get("key_points", []),
-                        subtopics=r.get("subtopics", []),
-                        detailed_analysis=r.get("detailed_analysis", ""),
+                        sub_topics=sub_topics,
+                        tags=tags,
                     ))
                 else:
                     categorized.append(self._fallback_categorize(entity))
@@ -239,6 +272,20 @@ Return ONLY valid JSON."""
 
 Content type definitions:
 {content_type_defs}
+
+Topic category definitions:
+- frontend: UI libraries, CSS frameworks, React/Vue/Angular, component libraries (e.g. tailwind, shadcn, radix), animations, UI/UX tools
+- backend: APIs, servers, server frameworks (e.g. express, fastapi, django)
+- devops: CI/CD, Docker, Kubernetes, deployment, monitoring
+- ai_ml: LLMs, embeddings, RAG, prompt engineering, AI agents
+- database: SQL/NoSQL databases, ORMs, data modeling
+- security: auth, OAuth, JWT, encryption
+- testing: unit/integration/e2e testing frameworks
+- architecture: design patterns, system design, clean code
+- performance: optimization, caching, profiling
+- mobile: React Native, Flutter, Expo
+- cloud: AWS/GCP/Azure, serverless, Vercel/Netlify
+- other: only if nothing above fits at all
 
 Available subtopics per topic:
 {json.dumps(all_subtopics, indent=2)}

@@ -83,7 +83,23 @@ class Embedder:
 
     async def _embed_batch_with_fallback(self, batch: List[str]) -> List[List[float]]:
         """Try embedding with fallback providers."""
-        # Try OpenAI first
+        # Try Ollama first (local, no API key needed)
+        try:
+            import requests as _requests
+            # Ollama embedding API is at /api/embed, not /v1/api/embed
+            ollama_base = self.ollama_base_url.replace("/v1", "").rstrip("/")
+            r = _requests.post(
+                f"{ollama_base}/api/embed",
+                json={"model": "nomic-embed-text", "input": batch},
+                timeout=60
+            )
+            r.raise_for_status()
+            embeddings = r.json()["embeddings"]
+            return [self._adjust_dimensions(e) for e in embeddings]
+        except Exception as e:
+            logger.warning(f"Ollama embedding failed: {e}")
+        
+        # Try OpenAI
         try:
             response = await self.openai_client.embeddings.create(
                 model=self.model,
@@ -125,20 +141,6 @@ class Embedder:
                 return [self._adjust_dimensions(e) for e in embeddings]
             except Exception as e:
                 logger.warning(f"Google embedding failed: {e}")
-        
-        # Try Ollama (nomic-embed-text, 768 dims)
-        try:
-            import requests as _requests
-            r = _requests.post(
-                f"{self.ollama_base_url}/api/embed",
-                json={"model": "nomic-embed-text", "input": batch},
-                timeout=30
-            )
-            r.raise_for_status()
-            embeddings = r.json()["embeddings"]
-            return [self._adjust_dimensions(e) for e in embeddings]
-        except Exception as e:
-            logger.warning(f"Ollama embedding failed: {e}")
         
         raise Exception("All embedding providers failed")
     
@@ -382,3 +384,28 @@ class VectorStore:
             "points_count": info.points_count,
             "status": info.status
         }
+
+    def point_exists(self, point_id: str) -> bool:
+        """Check whether a point with the given id exists (reconciliation)."""
+        try:
+            result = self.client.retrieve(
+                collection_name=self.collection_name,
+                ids=[point_id],
+                with_vectors=False,
+            )
+            return len(result) > 0
+        except Exception:
+            return False
+
+    def point_payload(self, point_id: str) -> Dict[str, Any] | None:
+        """Return the payload of a point, or None if it doesn't exist."""
+        try:
+            result = self.client.retrieve(
+                collection_name=self.collection_name,
+                ids=[point_id],
+                with_vectors=False,
+                with_payload=True,
+            )
+            return dict(result[0].payload) if result else None
+        except Exception:
+            return None
